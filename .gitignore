@@ -1,0 +1,43 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+
+# next.js
+/.next/
+/out/
+next-env.d.ts
+
+# production
+/build
+
+# local databases (NEVER commit)
+/data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# env — NEVER commit real env files
+.env
+.env.*
+!.env.example
+
+# misc
+.DS_Store
+*.pem
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# typescript
+*.tsbuildinfo
+
+# testing
+/coverage
+
+# uploads (user-generated images stored outside git)
+/public/uploads
+!/public/uploads/.gitkeep
