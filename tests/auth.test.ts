@@ -77,6 +77,47 @@ describe("permission matrix", () => {
   });
 });
 
+describe("signed session tokens", () => {
+  const SECRET = "test-secret-0123456789abcdef";
+  const hadSecret = process.env.SESSION_SECRET;
+
+  beforeAll(() => { process.env.SESSION_SECRET = SECRET; });
+  afterAll(() => {
+    if (hadSecret === undefined) delete process.env.SESSION_SECRET;
+    else process.env.SESSION_SECRET = hadSecret;
+  });
+
+  it("round-trips a valid token", () => {
+    const exp = Date.now() + 3600_000;
+    const token = auth.signSession(42, exp);
+    expect(auth.verifySessionToken(token)).toEqual({ userId: 42, expMs: exp });
+  });
+
+  it("rejects a tampered user id (signature covers the payload)", () => {
+    const token = auth.signSession(42, Date.now() + 3600_000);
+    const [, exp, sig] = token.split(".");
+    expect(auth.verifySessionToken(`99.${exp}.${sig}`)).toBeNull();
+    expect(auth.verifySessionToken(`42.${Number(exp) + 1000}.${sig}`)).toBeNull();
+  });
+
+  it("rejects expired tokens", () => {
+    expect(auth.verifySessionToken(auth.signSession(42, Date.now() - 1000))).toBeNull();
+  });
+
+  it("rejects tokens signed with a different secret", () => {
+    const token = auth.signSession(42, Date.now() + 3600_000);
+    process.env.SESSION_SECRET = "another-secret-9876543210";
+    expect(auth.verifySessionToken(token)).toBeNull();
+    process.env.SESSION_SECRET = SECRET;
+  });
+
+  it("returns null for legacy raw tokens and garbage", () => {
+    expect(auth.verifySessionToken("a".repeat(64))).toBeNull();
+    expect(auth.verifySessionToken("")).toBeNull();
+    expect(auth.verifySessionToken("1.2.zz")).toBeNull();
+  });
+});
+
 describe("admin bootstrap (ADMIN_EMAIL/ADMIN_PASSWORD)", () => {
   const clearEnv = () => {
     delete process.env.ADMIN_EMAIL;

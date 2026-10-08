@@ -42,14 +42,51 @@ export function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+let _devSessionKey: Buffer | null = null;
+
+function sessionKey(): Buffer {
+  const secret = process.env.SESSION_SECRET;
+  if (secret && secret.length >= 16) return Buffer.from(secret, "utf8");
+  if (!_devSessionKey) {
+    _devSessionKey = crypto.randomBytes(32);
+    console.warn("[auth] SESSION_SECRET missing or too short — using an ephemeral per-process session key (dev only)");
+  }
+  return _devSessionKey;
+}
+
+/**
+ * Signs `userId.expMs` into a stateless session token (HMAC-SHA256 with
+ * SESSION_SECRET). Unlike DB-backed session rows, the signature verifies on
+ * any serverless instance, so logins survive per-instance databases.
+ */
+export function signSession(userId: number, expMs: number): string {
+  const payload = `${userId}.${expMs}`;
+  const sig = crypto.createHmac("sha256", sessionKey()).update(payload).digest("hex");
+  return `${payload}.${sig}`;
+}
+
+/** Verifies a signed session token; null when tampered, expired, or a legacy raw token. */
+export function verifySessionToken(token: string): { userId: number; expMs: number } | null {
+  const m = /^(\d{1,15})\.(\d{1,15})\.([0-9a-f]{64})$/.exec(token);
+  if (!m) return null;
+  const payload = `${m[1]}.${m[2]}`;
+  const expected = crypto.createHmac("sha256", sessionKey()).update(payload).digest();
+  const given = Buffer.from(m[3], "hex");
+  if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return null;
+  if (Number(m[2]) <= Date.now()) return null;
+  return { userId: Number(m[1]), expMs: Number(m[2]) };
+}
+
 export async function createSession(userId: number, ip?: string, ua?: string): Promise<string> {
   const db = getDb();
-  const token = crypto.randomBytes(32).toString("hex");
   const ttlHours = Number(process.env.SESSION_TTL_HOURS || 168);
-  const expires = new Date(Date.now() + ttlHours * 3600_000).toISOString();
+  const expMs = Date.now() + ttlHours * 3600_000;
+  const token = signSession(userId, expMs);
+  // Row kept for audit (ip/ua) and best-effort revocation on this instance;
+  // authentication itself relies on the signed token, not this row.
   db.prepare(
     "INSERT INTO auth_sessions (id, user_id, expires_at, ip, user_agent) VALUES (?, ?, ?, ?, ?)"
-  ).run(sha256(token), userId, expires, ip ?? null, ua ?? null);
+  ).run(sha256(token), userId, new Date(expMs).toISOString(), ip ?? null, ua ?? null);
   return token;
 }
 
@@ -122,6 +159,28 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   const token = store.get(SESSION_COOKIE)?.value;
   if (!token) return null;
   const db = getDb();
+
+  const signed = verifySessionToken(token);
+  if (signed) {
+    // Stateless path: signature + expiry are verifiable on any instance, and
+    // the user row is loaded from this instance's DB (the admin row self-heals
+    // via ensureAdminBootstrap above), so serverless instance isolation cannot
+    // bounce an authenticated request back to the login page.
+    const row = db
+      .prepare(
+        `SELECT u.id, u.email, u.role, u.admin_level, u.full_name, u.status, u.phone, su.id AS supplier_id
+           FROM users u LEFT JOIN suppliers su ON su.user_id = u.id
+          WHERE u.id = ?`
+      )
+      .get(signed.userId) as any;
+    if (!row || row.status !== "active") return null;
+    // Best-effort revocation: honoured on instances that hold the session row.
+    const sess = db.prepare("SELECT revoked FROM auth_sessions WHERE id = ?").get(sha256(token)) as any;
+    if (sess && sess.revoked) return null;
+    return toSessionUser(row);
+  }
+
+  // Legacy DB-backed cookie (raw random token) — kept so existing sessions work.
   const row = db
     .prepare(
       `SELECT u.id, u.email, u.role, u.admin_level, u.full_name, u.status, u.phone, s.expires_at, s.revoked,
@@ -135,6 +194,10 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   if (!row || row.revoked) return null;
   if (new Date(row.expires_at).getTime() < Date.now()) return null;
   if (row.status !== "active") return null;
+  return toSessionUser(row);
+}
+
+function toSessionUser(row: any): SessionUser {
   return {
     id: row.id,
     email: row.email,
