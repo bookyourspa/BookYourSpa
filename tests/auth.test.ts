@@ -2,7 +2,7 @@
  * Authentication & RBAC unit tests: password hashing, session integrity,
  * permission matrix.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { makeFixture, Fixture } from "./helpers";
 
 let fx: Fixture;
@@ -14,7 +14,12 @@ beforeAll(async () => {
   auth = await import("../src/lib/auth");
 });
 
-afterAll(() => fx?.cleanup());
+afterAll(() => {
+  delete process.env.ADMIN_EMAIL;
+  delete process.env.ADMIN_PASSWORD;
+  delete process.env.ADMIN_NAME;
+  fx?.cleanup();
+});
 
 describe("password hashing", () => {
   it("verifies correct password and rejects wrong one", () => {
@@ -69,5 +74,80 @@ describe("permission matrix", () => {
     const suspended = { ...user("customer"), status: "suspended" };
     expect(auth.can(suspended, "customer:book")).toBe(false);
     expect(auth.can(null, "customer:book")).toBe(false);
+  });
+});
+
+describe("admin bootstrap (ADMIN_EMAIL/ADMIN_PASSWORD)", () => {
+  const clearEnv = () => {
+    delete process.env.ADMIN_EMAIL;
+    delete process.env.ADMIN_PASSWORD;
+    delete process.env.ADMIN_NAME;
+  };
+
+  afterEach(clearEnv);
+
+  it("is a no-op when env vars are unset", () => {
+    clearEnv();
+    const count = () => (fx.db.prepare("SELECT COUNT(*) AS n FROM users").get() as any).n;
+    const n = count();
+    auth.ensureAdminBootstrap();
+    expect(count()).toBe(n);
+  });
+
+  it("creates a super admin with a verifiable password", () => {
+    process.env.ADMIN_EMAIL = "portal@bootstrap.test";
+    process.env.ADMIN_PASSWORD = "BYS154@bys";
+    process.env.ADMIN_NAME = "Portal Admin";
+    auth.ensureAdminBootstrap();
+
+    const row: any = fx.db.prepare("SELECT * FROM users WHERE email = 'portal@bootstrap.test'").get();
+    expect(row).toBeTruthy();
+    expect(row.role).toBe("admin");
+    expect(row.admin_level).toBe("super");
+    expect(row.status).toBe("active");
+    expect(row.full_name).toBe("Portal Admin");
+    expect(auth.verifyPassword("BYS154@bys", row.password_hash)).toBe(true);
+  });
+
+  it("is idempotent and never demotes or re-hashes an existing super admin", () => {
+    process.env.ADMIN_EMAIL = "portal@bootstrap.test";
+    process.env.ADMIN_PASSWORD = "BYS154@bys";
+    auth.ensureAdminBootstrap();
+    const first: any = fx.db.prepare("SELECT * FROM users WHERE email = 'portal@bootstrap.test'").get();
+
+    process.env.ADMIN_PASSWORD = "DifferentPass1";
+    auth.ensureAdminBootstrap();
+    const second: any = fx.db.prepare("SELECT * FROM users WHERE email = 'portal@bootstrap.test'").get();
+
+    const n = (fx.db.prepare("SELECT COUNT(*) AS n FROM users WHERE email = 'portal@bootstrap.test'").get() as any).n;
+    expect(n).toBe(1);
+    // Existing super admin untouched — env password change must NOT hijack it.
+    expect(second.password_hash).toBe(first.password_hash);
+    expect(auth.verifyPassword("BYS154@bys", second.password_hash)).toBe(true);
+    expect(auth.verifyPassword("DifferentPass1", second.password_hash)).toBe(false);
+  });
+
+  it("promotes an existing non-admin account at that email and resets its password", () => {
+    fx.db.prepare(
+      "INSERT INTO users (email, password_hash, role, full_name) VALUES ('promote@bootstrap.test', ?, 'customer', 'Cust')"
+    ).run(auth.hashPassword("OldPassword1"));
+
+    process.env.ADMIN_EMAIL = "promote@bootstrap.test";
+    process.env.ADMIN_PASSWORD = "NewAdminPass1";
+    auth.ensureAdminBootstrap();
+
+    const row: any = fx.db.prepare("SELECT * FROM users WHERE email = 'promote@bootstrap.test'").get();
+    expect(row.role).toBe("admin");
+    expect(row.admin_level).toBe("super");
+    expect(auth.verifyPassword("NewAdminPass1", row.password_hash)).toBe(true);
+    expect(auth.verifyPassword("OldPassword1", row.password_hash)).toBe(false);
+  });
+
+  it("refuses a too-short admin password", () => {
+    process.env.ADMIN_EMAIL = "short@bootstrap.test";
+    process.env.ADMIN_PASSWORD = "short";
+    auth.ensureAdminBootstrap();
+    const row = fx.db.prepare("SELECT id FROM users WHERE email = 'short@bootstrap.test'").get();
+    expect(row).toBeUndefined();
   });
 });

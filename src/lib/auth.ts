@@ -77,8 +77,47 @@ export async function clearSessionCookie(): Promise<void> {
   store.delete(SESSION_COOKIE);
 }
 
+/**
+ * Ensures the account declared by ADMIN_EMAIL / ADMIN_PASSWORD exists as a
+ * super admin. Runs on every authenticated context so a wiped DB (e.g.
+ * serverless /tmp) self-heals on the first request; no-op when the env vars
+ * are unset or empty. An existing super admin is never modified — only a
+ * missing account is created, or a non-admin account at that email is
+ * promoted (with its password reset to the env value so the declared
+ * credential always works). Never logs the password.
+ */
+export function ensureAdminBootstrap(): void {
+  const email = process.env.ADMIN_EMAIL;
+  const password = process.env.ADMIN_PASSWORD;
+  if (!email || !password) return;
+  if (password.length < 8) {
+    console.warn("[auth] ADMIN_PASSWORD is shorter than 8 characters — admin bootstrap skipped");
+    return;
+  }
+  const db = getDb();
+  const existing = db
+    .prepare("SELECT id, role, admin_level FROM users WHERE email = ? COLLATE NOCASE")
+    .get(email) as { id: number; role: string; admin_level: string | null } | undefined;
+  if (!existing) {
+    db.prepare(
+      `INSERT INTO users (email, password_hash, role, admin_level, full_name)
+       VALUES (?,?, 'admin', 'super', ?)`
+    ).run(email, hashPassword(password), process.env.ADMIN_NAME?.trim() || "Super Admin");
+    console.log(`[auth] bootstrapped super admin: ${email}`);
+    return;
+  }
+  if (existing.role !== "admin" || existing.admin_level !== "super") {
+    db.prepare(
+      `UPDATE users SET role = 'admin', admin_level = 'super', password_hash = ?, updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(hashPassword(password), existing.id);
+    console.log(`[auth] promoted ${email} to super admin via ADMIN_EMAIL bootstrap`);
+  }
+}
+
 /** Returns the signed-in user or null. Validates session, expiry and account status. */
 export async function getCurrentUser(): Promise<SessionUser | null> {
+  ensureAdminBootstrap();
   const store = await cookies();
   const token = store.get(SESSION_COOKIE)?.value;
   if (!token) return null;
