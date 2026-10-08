@@ -115,15 +115,26 @@ export async function clearSessionCookie(): Promise<void> {
 }
 
 /**
- * Ensures the account declared by ADMIN_EMAIL / ADMIN_PASSWORD exists as a
- * super admin. Runs on every authenticated context so a wiped DB (e.g.
- * serverless /tmp) self-heals on the first request; no-op when the env vars
- * are unset or empty. An existing super admin is never modified — only a
- * missing account is created, or a non-admin account at that email is
- * promoted (with its password reset to the env value so the declared
- * credential always works). Never logs the password.
+ * Seeds env-declared setup accounts so every serverless instance (each with
+ * its own isolated database) can authenticate them after a cold start:
+ *   - ADMIN_EMAIL/ADMIN_PASSWORD  → super admin: created if missing; a
+ *     non-admin at that email is promoted with its password reset to the env
+ *     value; an existing super admin is never modified.
+ *   - SUPPLIER_EMAIL/SUPPLIER_PASSWORD (+ SUPPLIER_BUSINESS, SUPPLIER_NAME)
+ *     → supplier user with a pending business — created only when the email
+ *     is missing; existing accounts are never modified.
+ *   - SEED_DEMO=1 → the demo customer/supplier advertised on the login page
+ *     (Demo123!) — created only when missing.
+ * Runs on every request but issues only indexed lookups unless a row is
+ * missing. Never logs passwords; never sends email or notifications.
  */
-export function ensureAdminBootstrap(): void {
+export function ensureSeedAccounts(): void {
+  ensureAdminSeed();
+  ensureSupplierSeed();
+  ensureDemoSeed();
+}
+
+function ensureAdminSeed(): void {
   const email = process.env.ADMIN_EMAIL;
   const password = process.env.ADMIN_PASSWORD;
   if (!email || !password) return;
@@ -152,9 +163,67 @@ export function ensureAdminBootstrap(): void {
   }
 }
 
+function ensureSupplierSeed(): void {
+  const email = process.env.SUPPLIER_EMAIL;
+  const password = process.env.SUPPLIER_PASSWORD;
+  if (!email || !password) return;
+  if (password.length < 8) {
+    console.warn("[auth] SUPPLIER_PASSWORD is shorter than 8 characters — supplier seed skipped");
+    return;
+  }
+  const db = getDb();
+  const exists = db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE").get(email);
+  if (exists) return;
+  const business = process.env.SUPPLIER_BUSINESS?.trim() || "My Spa";
+  const fullName = process.env.SUPPLIER_NAME?.trim() || business;
+  db.transaction(() => {
+    const userId = Number(
+      db
+        .prepare(`INSERT INTO users (email, password_hash, role, full_name) VALUES (?,?, 'supplier', ?)`)
+        .run(email, hashPassword(password), fullName)
+        .lastInsertRowid
+    );
+    db.prepare(
+      `INSERT INTO suppliers (user_id, business_name, status, submitted_at)
+       VALUES (?,?, 'pending', datetime('now'))`
+    ).run(userId, business);
+  })();
+  console.log(`[auth] seeded supplier: ${email} (${business})`);
+}
+
+function ensureDemoSeed(): void {
+  const flag = process.env.SEED_DEMO;
+  if (flag !== "1" && flag !== "true") return;
+  const db = getDb();
+  const missing = (email: string) =>
+    !db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE").get(email);
+  const pw = "Demo123!"; // same credential the login page advertises
+  if (missing("customer@demo.test")) {
+    db.prepare(
+      `INSERT INTO users (email, password_hash, role, full_name) VALUES (?,?, 'customer', 'Demo Customer')`
+    ).run("customer@demo.test", hashPassword(pw));
+    console.log("[auth] seeded demo customer");
+  }
+  if (missing("supplier@demo.test")) {
+    db.transaction(() => {
+      const userId = Number(
+        db
+          .prepare(`INSERT INTO users (email, password_hash, role, full_name) VALUES (?,?, 'supplier', 'Demo Supplier')`)
+          .run("supplier@demo.test", hashPassword(pw))
+          .lastInsertRowid
+      );
+      db.prepare(
+        `INSERT INTO suppliers (user_id, business_name, status, submitted_at)
+         VALUES (?,?, 'pending', datetime('now'))`
+      ).run(userId, "Demo Spa");
+    })();
+    console.log("[auth] seeded demo supplier");
+  }
+}
+
 /** Returns the signed-in user or null. Validates session, expiry and account status. */
 export async function getCurrentUser(): Promise<SessionUser | null> {
-  ensureAdminBootstrap();
+  ensureSeedAccounts();
   const store = await cookies();
   const token = store.get(SESSION_COOKIE)?.value;
   if (!token) return null;
@@ -163,8 +232,8 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   const signed = verifySessionToken(token);
   if (signed) {
     // Stateless path: signature + expiry are verifiable on any instance, and
-    // the user row is loaded from this instance's DB (the admin row self-heals
-    // via ensureAdminBootstrap above), so serverless instance isolation cannot
+    // the user row is loaded from this instance's DB (setup rows self-heal via
+    // ensureSeedAccounts above), so serverless instance isolation cannot
     // bounce an authenticated request back to the login page.
     const row = db
       .prepare(

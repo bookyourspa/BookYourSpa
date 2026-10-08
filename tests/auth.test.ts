@@ -18,7 +18,12 @@ afterAll(() => {
   delete process.env.ADMIN_EMAIL;
   delete process.env.ADMIN_PASSWORD;
   delete process.env.ADMIN_NAME;
-  fx?.cleanup();
+    delete process.env.SUPPLIER_EMAIL;
+    delete process.env.SUPPLIER_PASSWORD;
+    delete process.env.SUPPLIER_BUSINESS;
+    delete process.env.SUPPLIER_NAME;
+    delete process.env.SEED_DEMO;
+    fx?.cleanup();
 });
 
 describe("password hashing", () => {
@@ -123,6 +128,11 @@ describe("admin bootstrap (ADMIN_EMAIL/ADMIN_PASSWORD)", () => {
     delete process.env.ADMIN_EMAIL;
     delete process.env.ADMIN_PASSWORD;
     delete process.env.ADMIN_NAME;
+    delete process.env.SUPPLIER_EMAIL;
+    delete process.env.SUPPLIER_PASSWORD;
+    delete process.env.SUPPLIER_BUSINESS;
+    delete process.env.SUPPLIER_NAME;
+    delete process.env.SEED_DEMO;
   };
 
   afterEach(clearEnv);
@@ -131,7 +141,7 @@ describe("admin bootstrap (ADMIN_EMAIL/ADMIN_PASSWORD)", () => {
     clearEnv();
     const count = () => (fx.db.prepare("SELECT COUNT(*) AS n FROM users").get() as any).n;
     const n = count();
-    auth.ensureAdminBootstrap();
+    auth.ensureSeedAccounts();
     expect(count()).toBe(n);
   });
 
@@ -139,7 +149,7 @@ describe("admin bootstrap (ADMIN_EMAIL/ADMIN_PASSWORD)", () => {
     process.env.ADMIN_EMAIL = "portal@bootstrap.test";
     process.env.ADMIN_PASSWORD = "BYS154@bys";
     process.env.ADMIN_NAME = "Portal Admin";
-    auth.ensureAdminBootstrap();
+    auth.ensureSeedAccounts();
 
     const row: any = fx.db.prepare("SELECT * FROM users WHERE email = 'portal@bootstrap.test'").get();
     expect(row).toBeTruthy();
@@ -153,11 +163,11 @@ describe("admin bootstrap (ADMIN_EMAIL/ADMIN_PASSWORD)", () => {
   it("is idempotent and never demotes or re-hashes an existing super admin", () => {
     process.env.ADMIN_EMAIL = "portal@bootstrap.test";
     process.env.ADMIN_PASSWORD = "BYS154@bys";
-    auth.ensureAdminBootstrap();
+    auth.ensureSeedAccounts();
     const first: any = fx.db.prepare("SELECT * FROM users WHERE email = 'portal@bootstrap.test'").get();
 
     process.env.ADMIN_PASSWORD = "DifferentPass1";
-    auth.ensureAdminBootstrap();
+    auth.ensureSeedAccounts();
     const second: any = fx.db.prepare("SELECT * FROM users WHERE email = 'portal@bootstrap.test'").get();
 
     const n = (fx.db.prepare("SELECT COUNT(*) AS n FROM users WHERE email = 'portal@bootstrap.test'").get() as any).n;
@@ -175,7 +185,7 @@ describe("admin bootstrap (ADMIN_EMAIL/ADMIN_PASSWORD)", () => {
 
     process.env.ADMIN_EMAIL = "promote@bootstrap.test";
     process.env.ADMIN_PASSWORD = "NewAdminPass1";
-    auth.ensureAdminBootstrap();
+    auth.ensureSeedAccounts();
 
     const row: any = fx.db.prepare("SELECT * FROM users WHERE email = 'promote@bootstrap.test'").get();
     expect(row.role).toBe("admin");
@@ -187,8 +197,68 @@ describe("admin bootstrap (ADMIN_EMAIL/ADMIN_PASSWORD)", () => {
   it("refuses a too-short admin password", () => {
     process.env.ADMIN_EMAIL = "short@bootstrap.test";
     process.env.ADMIN_PASSWORD = "short";
-    auth.ensureAdminBootstrap();
+    auth.ensureSeedAccounts();
     const row = fx.db.prepare("SELECT id FROM users WHERE email = 'short@bootstrap.test'").get();
+    expect(row).toBeUndefined();
+  });
+
+  it("seeds the declared supplier with a pending business", () => {
+    process.env.SUPPLIER_EMAIL = "sup-seed@bootstrap.test";
+    process.env.SUPPLIER_PASSWORD = "SupPass123";
+    process.env.SUPPLIER_BUSINESS = "Seeded Spa";
+    process.env.SUPPLIER_NAME = "Seeded Owner";
+    auth.ensureSeedAccounts();
+
+    const row: any = fx.db.prepare("SELECT * FROM users WHERE email = 'sup-seed@bootstrap.test'").get();
+    expect(row).toBeTruthy();
+    expect(row.role).toBe("supplier");
+    expect(row.full_name).toBe("Seeded Owner");
+    expect(auth.verifyPassword("SupPass123", row.password_hash)).toBe(true);
+    const sup: any = fx.db.prepare("SELECT * FROM suppliers WHERE user_id = ?").get(row.id);
+    expect(sup.business_name).toBe("Seeded Spa");
+    expect(sup.status).toBe("pending");
+  });
+
+  it("never modifies an existing supplier account", () => {
+    const hash = auth.hashPassword("OriginalPass1");
+    fx.db.prepare(
+      "INSERT INTO users (email, password_hash, role, full_name) VALUES ('existing-sup@bootstrap.test', ?, 'supplier', 'Owner')"
+    ).run(hash);
+
+    process.env.SUPPLIER_EMAIL = "existing-sup@bootstrap.test";
+    process.env.SUPPLIER_PASSWORD = "DifferentEnv1";
+    auth.ensureSeedAccounts();
+
+    const row: any = fx.db.prepare("SELECT * FROM users WHERE email = 'existing-sup@bootstrap.test'").get();
+    expect(row.password_hash).toBe(hash);
+    expect(auth.verifyPassword("OriginalPass1", row.password_hash)).toBe(true);
+  });
+
+  it("SEED_DEMO creates the demo customer and supplier exactly once", () => {
+    process.env.SEED_DEMO = "1";
+    auth.ensureSeedAccounts();
+    auth.ensureSeedAccounts();
+
+    const cust: any = fx.db.prepare("SELECT * FROM users WHERE email = 'customer@demo.test'").get();
+    expect(cust).toBeTruthy();
+    expect(cust.role).toBe("customer");
+    expect(auth.verifyPassword("Demo123!", cust.password_hash)).toBe(true);
+
+    const sup: any = fx.db.prepare("SELECT * FROM users WHERE email = 'supplier@demo.test'").get();
+    expect(sup).toBeTruthy();
+    expect(sup.role).toBe("supplier");
+    const business: any = fx.db.prepare("SELECT * FROM suppliers WHERE user_id = ?").get(sup.id);
+    expect(business.business_name).toBe("Demo Spa");
+    expect(business.status).toBe("pending");
+
+    const n = (fx.db.prepare("SELECT COUNT(*) AS n FROM users WHERE email = 'customer@demo.test'").get() as any).n;
+    expect(n).toBe(1);
+  });
+
+  it("does not seed demo accounts when SEED_DEMO is unset", () => {
+    clearEnv();
+    auth.ensureSeedAccounts();
+    const row = fx.db.prepare("SELECT id FROM users WHERE email = 'therapist@demo.test'").get();
     expect(row).toBeUndefined();
   });
 });
