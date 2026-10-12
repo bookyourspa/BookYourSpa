@@ -68,7 +68,7 @@ authRoutes.post('/register', async (c) => {
     id: userId, email: v.email, role: v.role, name: v.name, phone: v.phone ?? null,
     status: 'active', supplier_id: null, supplier_status: supplierStatus,
   };
-  c.header('Set-Cookie', sessionCookie(token, isSecure(c.env.APP_ORIGIN)));
+  c.header('Set-Cookie', sessionCookie(token, isSecure(c.env.APP_ORIGIN ?? c.req.url)));
   return c.json({ user, supplierStatus }, 201);
 });
 
@@ -90,7 +90,7 @@ authRoutes.post('/login', async (c) => {
 
   const supplier = await c.env.DB.prepare('SELECT id, status FROM suppliers WHERE user_id = ?').bind(user.id).first<any>();
   const token = await createSession(c.env.DB, user.id, { ip, ua: c.req.header('user-agent') ?? '' });
-  c.header('Set-Cookie', sessionCookie(token, isSecure(c.env.APP_ORIGIN)));
+  c.header('Set-Cookie', sessionCookie(token, isSecure(c.env.APP_ORIGIN ?? c.req.url)));
   return c.json({
     user: {
       id: user.id, email: user.email, role: user.role, name: user.name, phone: user.phone,
@@ -102,7 +102,7 @@ authRoutes.post('/login', async (c) => {
 authRoutes.post('/logout', async (c) => {
   const token = parseCookies(c.req.header('cookie'))[SESSION_COOKIE];
   await destroySession(c.env.DB, token);
-  c.header('Set-Cookie', clearSessionCookie(isSecure(c.env.APP_ORIGIN)));
+  c.header('Set-Cookie', clearSessionCookie(isSecure(c.env.APP_ORIGIN ?? c.req.url)));
   return c.json({ ok: true });
 });
 
