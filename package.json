@@ -1,0 +1,5 @@
+{
+  "name": "bookyourspa",
+  "private": true,
+  "workspaces": ["web", "worker"]
+}

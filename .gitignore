@@ -1,0 +1,11 @@
+node_modules/
+.next/
+out/
+.wrangler/
+dist/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+web/next-env.d.ts

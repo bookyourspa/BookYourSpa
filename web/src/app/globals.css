@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: var(--font-cormorant), "Cormorant Garamond", Georgia, serif;
+  --font-sans: var(--font-jost), "Jost", ui-sans-serif, system-ui, sans-serif;
+
+  --color-ink: #101c16;
+  --color-forest: #16241d;
+  --color-moss: #23372d;
+  --color-gold: #c8a96a;
+  --color-gold-soft: #e4cfa3;
+  --color-champagne: #f3ead9;
+  --color-cream: #faf7f1;
+  --color-sand: #efe8db;
+  --color-sage: #7e9b8a;
+  --color-stone: #8a8375;
+}
+
+@layer base {
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--color-cream);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, h4 { font-family: var(--font-display); font-weight: 500; letter-spacing: -0.01em; }
+  ::selection { background: var(--color-gold); color: #fff; }
+  :focus-visible { outline: 2px solid var(--color-gold); outline-offset: 2px; border-radius: 2px; }
+  input, select, textarea, button { font-family: inherit; }
+}
+
+@layer utilities {
+  .container-site { @apply mx-auto w-full max-w-[80rem] px-5 sm:px-8; }
+  .eyebrow { @apply text-[0.7rem] uppercase tracking-[0.34em] text-gold font-medium; }
+
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-full px-7 py-3.5 text-sm font-medium tracking-wide transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed; }
+  .btn-gold { @apply inline-flex items-center justify-center gap-2 rounded-full px-7 py-3.5 text-sm font-medium tracking-wide transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed; @apply bg-gradient-to-b from-gold-soft to-gold text-forest hover:shadow-[0_10px_30px_-10px_rgba(200,169,106,0.8)] hover:-translate-y-0.5; }
+  .btn-ink { @apply inline-flex items-center justify-center gap-2 rounded-full px-7 py-3.5 text-sm font-medium tracking-wide transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed; @apply bg-ink text-champagne hover:bg-moss hover:-translate-y-0.5; }
+  .btn-outline { @apply inline-flex items-center justify-center gap-2 rounded-full px-7 py-3.5 text-sm font-medium tracking-wide transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed; @apply border border-ink/25 text-ink hover:border-gold hover:text-gold; }
+  .btn-ghost-light { @apply inline-flex items-center justify-center gap-2 rounded-full px-7 py-3.5 text-sm font-medium tracking-wide transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed; @apply border border-champagne/40 text-champagne hover:border-gold hover:text-gold; }
+
+  .card-lux { @apply rounded-2xl bg-white border border-ink/8 shadow-[0_20px_60px_-40px_rgba(16,28,22,0.55)]; }
+  .input-lux { @apply w-full rounded-xl border border-ink/15 bg-white px-4 py-3 text-sm placeholder:text-stone/70 focus:border-gold focus:ring-1 focus:ring-gold/60 outline-none transition-colors; }
+  .label-lux { @apply mb-1.5 block text-[0.72rem] uppercase tracking-[0.18em] text-stone; }
+  .divider-gold { @apply h-px w-16 bg-gradient-to-r from-gold to-transparent; }
+
+  .shimmer { @apply relative overflow-hidden bg-sand; }
+  .shimmer::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,0.65), transparent); animation: shimmer 1.4s infinite; }
+
+  .table-lux { @apply w-full text-sm; }
+  .table-lux th { @apply text-left text-[0.68rem] uppercase tracking-[0.18em] text-stone font-medium px-4 py-3 border-b border-ink/10; }
+  .table-lux td { @apply px-4 py-3.5 border-b border-ink/6 align-middle; }
+  .badge { @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[0.68rem] font-medium tracking-wide; }
+}
+
+@keyframes shimmer { 100% { transform: translateX(100%); } }
+@keyframes rise { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: none; } }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+.animate-rise { animation: rise 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.animate-fade { animation: fade 0.9s ease both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-rise, .animate-fade { animation: none !important; }
+  html { scroll-behavior: auto; }
+}
