@@ -7,8 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "bookyourspa"
-# Run `npx wrangler d1 create bookyourspa` (from worker/) and paste the real database_id below:
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "ae5cc559-9bc5-4848-a531-a1392ad6ad24"
 
 [assets]
 directory = "../deploy/public"

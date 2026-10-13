@@ -68,7 +68,16 @@ export function useRoleGuard(role: 'admin' | 'supplier' | 'customer', loginPath 
   const [allowed, setAllowed] = useState(false);
   useEffect(() => {
     if (loading) return;
-    if (!user) { window.location.replace(`${loginPath}?next=${encodeURIComponent(window.location.pathname)}`); return; }
+    if (!user) {
+      // Never redirect when already on the login page itself — it would reload
+      // forever (full-page location.replace on the current path = reload loop).
+      const here = window.location.pathname.replace(/\/+$/, '') || '/';
+      const loginNorm = loginPath.replace(/\/+$/, '') || '/';
+      if (here !== loginNorm) {
+        window.location.replace(`${loginPath}?next=${encodeURIComponent(here)}`);
+      }
+      return;
+    }
     if (user.role !== role) {
       window.location.replace(user.role === 'admin' ? '/admin' : user.role === 'supplier' ? '/supplier' : '/login');
       return;
