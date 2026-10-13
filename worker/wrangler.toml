@@ -3,13 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
 
-[vars]
-APP_ORIGIN = "http://localhost:8787"
-
+# APP_ORIGIN is derived from the request host; email links default to https://bookyourspa.net
 [[d1_databases]]
 binding = "DB"
 database_name = "bookyourspa"
-database_id = "00000000-0000-0000-0000-000000000000"
+# Run `npx wrangler d1 create bookyourspa` (from worker/) and paste the real database_id below:
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
 
 [assets]
 directory = "../deploy/public"
