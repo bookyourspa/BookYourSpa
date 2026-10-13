@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { cn } from '@/lib/format';
 
 export function Stars({ rating, size = 'text-sm' }: { rating: number; size?: string }) {
@@ -69,12 +69,14 @@ export function Toast({ message, tone = 'success', onClose }: { message: string;
 
 export function useToast() {
   const [toast, setToast] = useState<{ message: string; tone: 'success' | 'error' } | null>(null);
-  const show = (message: string, tone: 'success' | 'error' = 'success') => {
+  // `show` must be referentially stable: callers keep it in useCallback dep arrays,
+  // and a fresh identity every render caused an infinite refetch/spinner loop.
+  const show = useCallback((message: string, tone: 'success' | 'error' = 'success') => {
     setToast({ message, tone });
     setTimeout(() => setToast(null), 4500);
-  };
+  }, []);
   const node = toast ? <Toast message={toast.message} tone={toast.tone} onClose={() => setToast(null)} /> : null;
-  return { show, node };
+  return useMemo(() => ({ show, node }), [show, toast]);
 }
 
 export function Modal({ open, onClose, title, children, wide }: { open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean }) {

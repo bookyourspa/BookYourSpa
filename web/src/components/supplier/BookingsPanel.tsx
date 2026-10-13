@@ -18,7 +18,7 @@ export function BookingsPanel({ onChanged }: { onChanged: () => void }) {
       const qs = status === 'all' ? '' : `?status=${status}`;
       setItems((await api<{ items: any[] }>(`/api/supplier/bookings${qs}`)).items);
     } catch (e) { toast.show(e instanceof ApiError ? e.message : 'Failed to load bookings', 'error'); setItems([]); }
-  }, [status, toast]);
+  }, [status]);
 
   useEffect(() => { void load(); }, [load]);
 

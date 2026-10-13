@@ -153,7 +153,7 @@ function BookingsTab() {
       const data = await api<{ items: any[] }>(`/api/admin/bookings?${qs}`);
       setItems(data.items);
     } catch (e) { toast.show(e instanceof ApiError ? e.message : 'Failed to load bookings', 'error'); setItems([]); }
-  }, [status, q, toast]);
+  }, [status, q]);
 
   useEffect(() => { const t = setTimeout(() => void load(), q ? 300 : 0); return () => clearTimeout(t); }, [load, q]);
 
@@ -234,7 +234,7 @@ function CustomersTab({ stats, onRefresh }: { stats: Stats | null; onRefresh: ()
       if (q) qs.set('q', q);
       setItems((await api<{ items: any[] }>(`/api/admin/users?${qs}`)).items);
     } catch (e) { toast.show(e instanceof ApiError ? e.message : 'Failed to load users', 'error'); setItems([]); }
-  }, [role, q, toast]);
+  }, [role, q]);
 
   useEffect(() => { const t = setTimeout(() => void load(), q ? 300 : 0); return () => clearTimeout(t); }, [load, q]);
   useEffect(() => { void onRefresh(); }, [onRefresh]);
@@ -312,7 +312,7 @@ function SuppliersTab({ onRefresh }: { onRefresh: () => Promise<void> }) {
     try {
       setItems((await api<{ items: any[] }>(`/api/admin/suppliers?status=${status}`)).items);
     } catch (e) { toast.show(e instanceof ApiError ? e.message : 'Failed to load suppliers', 'error'); setItems([]); }
-  }, [status, toast]);
+  }, [status]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { void onRefresh(); }, [onRefresh]);
@@ -391,7 +391,7 @@ function SpasTab({ onRefresh }: { onRefresh: () => Promise<void> }) {
       if (q) qs.set('q', q);
       setItems((await api<{ items: any[] }>(`/api/admin/spas?${qs}`)).items);
     } catch (e) { toast.show(e instanceof ApiError ? e.message : 'Failed to load listings', 'error'); setItems([]); }
-  }, [status, q, toast]);
+  }, [status, q]);
 
   useEffect(() => { const t = setTimeout(() => void load(), q ? 300 : 0); return () => clearTimeout(t); }, [load, q]);
   useEffect(() => { void onRefresh(); }, [onRefresh]);

@@ -30,7 +30,7 @@ export function SpaManager({ spaId, mode = 'list', onChanged }: { spaId?: string
   const load = useCallback(async () => {
     try { setItems((await api<{ items: any[] }>('/api/supplier/spas')).items); }
     catch (e) { toast.show(e instanceof ApiError ? e.message : 'Failed to load listings', 'error'); setItems([]); }
-  }, [toast]);
+  }, []);
 
   useEffect(() => { if (mode === 'list') void load(); }, [mode, load]);
 
@@ -191,7 +191,7 @@ function CatalogManager({ spaId }: { spaId: string }) {
       const h = Array.from({ length: 7 }, (_, i) => d.hours.find((x: any) => x.day_of_week === i) ?? { day_of_week: i, open_time: '09:00', close_time: '20:00', closed: 0 });
       setHours(h);
     } catch (e) { toast.show(e instanceof ApiError ? e.message : 'Failed to load catalogue', 'error'); }
-  }, [spaId, toast]);
+  }, [spaId]);
 
   useEffect(() => { setData(null); void load(); }, [load]);
 

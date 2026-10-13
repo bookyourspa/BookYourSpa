@@ -34,8 +34,8 @@ const securityHeaders = (isHttps: boolean) => ({
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
   'Content-Security-Policy':
     "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; " +
-    "img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; " +
-    "font-src 'self' data:; connect-src 'self'",
+    "img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; " +
+    "font-src 'self' data:; connect-src 'self' https://cloudflareinsights.com https://static.cloudflareinsights.com",
   ...(isHttps ? { 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains' } : {}),
 });
 
