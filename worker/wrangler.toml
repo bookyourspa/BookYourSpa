@@ -1,0 +1,15 @@
+name = "bookyourspa"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# APP_ORIGIN is derived from the request host; email links default to https://bookyourspa.net
+[[d1_databases]]
+binding = "DB"
+database_name = "bookyourspa"
+database_id = "ae5cc559-9bc5-4848-a531-a1392ad6ad24"
+
+[assets]
+directory = "../deploy/public"
+binding = "ASSETS"
+run_worker_first = true

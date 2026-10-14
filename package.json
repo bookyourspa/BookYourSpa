@@ -1,0 +1,12 @@
+{
+  "name": "bookyourspa",
+  "private": true,
+  "workspaces": [
+    "web",
+    "worker"
+  ],
+  "scripts": {
+    "build:all": "npm run build --workspace web && npm run bundle --workspace worker && node scripts/prepare-deploy.mjs",
+    "deploy": "npm run build:all && cd worker && npx wrangler deploy"
+  }
+}
