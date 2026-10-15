@@ -169,6 +169,9 @@ const futureDate = (daysAhead) => {
 
   r = await req('/api/supplier/overview', { jar: sup });
   ok('overview stats', r.status === 200 && r.data.spas.length === 1, JSON.stringify(r.data.stats));
+  ok('overview rows include counts used by the dashboard',
+    r.data.spas.every((s) => s.counts && typeof s.counts.treatments === 'number' && typeof s.counts.packages === 'number'),
+    JSON.stringify(r.data.spas.map((s) => s.counts)));
 
   r = await req('/api/supplier/bookings', { jar: sup });
   const sb = r.data.items.find((b) => b.code === code);

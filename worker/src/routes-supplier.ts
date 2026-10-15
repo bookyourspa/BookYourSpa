@@ -40,9 +40,15 @@ supplierRoutes.get('/overview', async (c) => {
   const today = nowIso().slice(0, 10);
   const monthStart = today.slice(0, 7) + '-01';
 
+  // Counts are computed here (not on the client) so the overview rows carry the same
+  // `counts` shape as GET /supplier/spas — the dashboard renders treatments/packages per listing.
   const spaRows = await c.env.DB
-    .prepare('SELECT id, slug, name, city, status, featured, rating, review_count, image FROM spas WHERE supplier_id = ? ORDER BY name')
-    .bind(user.supplier_id)
+    .prepare(`SELECT s.id, s.slug, s.name, s.city, s.status, s.featured, s.rating, s.review_count, s.image,
+      (SELECT COUNT(*) FROM treatments t WHERE t.spa_id = s.id AND t.active = 1) AS treatment_count,
+      (SELECT COUNT(*) FROM packages p WHERE p.spa_id = s.id AND p.active = 1) AS package_count,
+      (SELECT COUNT(*) FROM bookings b WHERE b.spa_id = s.id AND b.status IN ('pending','confirmed') AND b.booking_date >= ?) AS upcoming_count
+      FROM spas s WHERE s.supplier_id = ? ORDER BY s.name`)
+    .bind(today, user.supplier_id)
     .all();
   const spaIds = spaRows.results.map((r: any) => r.id);
 
@@ -73,7 +79,15 @@ supplierRoutes.get('/overview', async (c) => {
 
   return c.json({
     stats,
-    spas: spaRows.results.map((r: any) => ({ ...r, featured: !!r.featured })),
+    spas: spaRows.results.map(({ treatment_count, package_count, upcoming_count, ...r }: any) => ({
+      ...r,
+      featured: !!r.featured,
+      counts: {
+        treatments: Number(treatment_count ?? 0),
+        packages: Number(package_count ?? 0),
+        upcoming: Number(upcoming_count ?? 0),
+      },
+    })),
     recent,
   });
 });

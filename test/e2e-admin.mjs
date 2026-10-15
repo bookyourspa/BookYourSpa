@@ -90,6 +90,14 @@ async function req(path, { method = 'GET', body, jar: j, csrf = true, origin, he
   r = await req(`/api/spas/${newSpaSlug}`);
   ok('approved listing live publicly', r.status === 200, `status=${r.status}`);
 
+  // Regression: the supplier Overview tab renders `s.counts.treatments/packages` per listing —
+  // the payload must carry them or the dashboard throws and the page goes blank.
+  r = await req('/api/supplier/overview', { jar: ced });
+  const countsShape = (s) => s.counts && [s.counts.treatments, s.counts.packages, s.counts.upcoming].every((n) => typeof n === 'number');
+  ok('supplier overview carries per-listing counts after approval',
+    r.status === 200 && r.data.spas.length > 0 && r.data.spas.every(countsShape),
+    JSON.stringify(r.data.spas?.map((s) => ({ name: s.name, counts: s.counts }))));
+
   console.log('— Settings / SEO management —');
   r = await req('/api/admin/settings', { jar: admin });
   ok('settings load', r.status === 200 && !!r.data.settings.site_title);
