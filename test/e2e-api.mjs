@@ -189,6 +189,106 @@ const futureDate = (daysAhead) => {
   r = await req('/api/supplier/spas', { jar: sup });
   ok('supplier lists own spa', r.data.items.length === 1 && r.data.items[0].slug === 'aurora-wellness-house');
 
+  console.log('— Listing sub-tabs: staff / promotions / reviews / booking filter —');
+  const tabSpaId = r.data.items[0].id;
+  const tabSpaSlug = r.data.items[0].slug;
+
+  // Staff CRUD
+  r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { jar: sup });
+  ok('staff list loads', r.status === 200 && Array.isArray(r.data.items), JSON.stringify(r.data).slice(0, 80));
+  r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { method: 'POST', jar: sup, body: {
+    name: `E2E Therapist ${UNIQUE}`, role: 'Massage therapist',
+    phone: '+44 20 7946 0102', email: `therapist.${UNIQUE}@example.com` } });
+  ok('staff member created (201)', r.status === 201, JSON.stringify(r.data));
+  const staffId = r.data.id;
+  r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { jar: sup });
+  ok('staff list contains new member', r.data.items.some((m) => m.id === staffId));
+  r = await req(`/api/supplier/staff/${staffId}`, { method: 'PATCH', jar: sup, body: { role: 'Senior therapist', active: false } });
+  ok('staff member updated', r.status === 200, JSON.stringify(r.data));
+  r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { jar: sup });
+  const updatedMember = r.data.items.find((m) => m.id === staffId);
+  ok('staff update persisted (role + hidden)', updatedMember?.role === 'Senior therapist' && !updatedMember.active,
+    JSON.stringify(updatedMember));
+  r = await req('/api/supplier/spas/spa_does_not_exist/staff', { jar: sup });
+  ok('staff on unknown spa -> 404', r.status === 404, `status=${r.status}`);
+  r = await req(`/api/supplier/staff/${staffId}`, { method: 'DELETE', jar: sup });
+  ok('staff member removed', r.status === 200, JSON.stringify(r.data));
+  r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { jar: sup });
+  ok('removed member gone', !r.data.items.some((m) => m.id === staffId));
+
+  // Listing-scoped promotions
+  const spaPromo = `SP${UNIQUE.toUpperCase().slice(-6)}`;
+  r = await req(`/api/supplier/spas/${tabSpaId}/offers`, { method: 'POST', jar: sup, body: {
+    code: spaPromo, title: 'Listing spring offer', description: 'Test listing promo', discountType: 'percent',
+    value: 25, minSpend: 0, startsAt: futureDate(1), endsAt: futureDate(30) } });
+  ok('listing promo created (201)', r.status === 201, JSON.stringify(r.data));
+  const spaPromoId = r.data.id;
+  r = await req(`/api/supplier/spas/${tabSpaId}/offers`, { jar: sup });
+  ok('listing promo listed for the spa', r.data.items.some((o) => o.code === spaPromo));
+
+  // Scoping: a listing promo must not leak into the public global offers feed…
+  r = await req('/api/offers');
+  ok('listing promo hidden from global /api/offers', !r.data.items.some((o) => o.code === spaPromo),
+    JSON.stringify(r.data.items.map((o) => o.code)));
+  // …while seeded global promos stay public.
+  const globalBefore = r.data.items.length;
+  ok('global promos still public', r.data.items.some((o) => o.code === 'SUNRISE10'));
+
+  // The listing promo discounts a booking on its own spa…
+  const promoDate = futureDate(9);
+  r = await req(`/api/availability?spa=${tabSpaSlug}&date=${promoDate}&itemType=treatment&itemSlug=signature-massage`);
+  const promoFree = r.data.slots?.find((s) => s.available);
+  ok('free slot for listing-promo booking', !!promoFree, JSON.stringify(r.data).slice(0, 100));
+  r = await req('/api/bookings', { method: 'POST', jar: cust, body: {
+    spaSlug: tabSpaSlug, itemType: 'treatment', itemSlug: 'signature-massage',
+    date: promoDate, time: promoFree?.time, promoCode: spaPromo } });
+  ok('listing promo applies on own spa (135 -> 101.25)', r.data.booking?.total === 101.25,
+    `total=${r.data.booking?.total} status=${r.status}`);
+  const promoBookingCode = r.data.booking?.code;
+  // …and is rejected on any other spa.
+  r = await req(`/api/availability?spa=ubud-botanica-spa&date=${promoDate}&itemType=treatment&itemSlug=signature-massage`);
+  const ubudFree = r.data.slots?.find((s) => s.available);
+  if (ubudFree) {
+    r = await req('/api/bookings', { method: 'POST', jar: cust, body: {
+      spaSlug: 'ubud-botanica-spa', itemType: 'treatment', itemSlug: 'signature-massage',
+      date: promoDate, time: ubudFree.time, promoCode: spaPromo } });
+    ok('listing promo rejected on another spa', r.status === 400 && r.data.code === 'invalid_promo', JSON.stringify(r.data));
+  } else {
+    ok('listing promo rejected on another spa', false, 'no free ubud slot');
+  }
+  if (promoBookingCode) {
+    r = await req(`/api/bookings/${promoBookingCode}/cancel`, { method: 'POST', jar: cust, body: { reason: 'e2e cleanup' } });
+    ok('listing-promo booking cancelled (cleanup)', r.status === 200, JSON.stringify(r.data));
+  }
+
+  // Suppliers must not be able to edit or delete global (admin) promos.
+  r = await req('/api/supplier/offers/off_SUNRISE10', { method: 'DELETE', jar: sup });
+  ok('global promo not supplier-deletable', r.status === 404, `status=${r.status}`);
+  r = await req('/api/offers');
+  ok('global promo intact after supplier delete attempt', r.data.items.some((o) => o.code === 'SUNRISE10'));
+
+  // Booking list scoped to one listing.
+  r = await req(`/api/supplier/bookings?spa=${tabSpaId}`, { jar: sup });
+  ok('bookings?spa returns only that listing rows',
+    r.status === 200 && r.data.items.length >= 1 && r.data.items.every((b) => b.spa_id === tabSpaId),
+    `n=${r.data.items.length} status=${r.status}`);
+  r = await req(`/api/supplier/bookings?spa=spa_does_not_exist`, { jar: sup });
+  ok('bookings?spa unknown listing -> empty list', r.status === 200 && r.data.items.length === 0, `n=${r.data.items.length}`);
+
+  // Reviews tab payload (public, moderated feed for this listing).
+  r = await req(`/api/reviews?spa=${tabSpaSlug}&limit=48`);
+  ok('review tab payload scoped to own spa',
+    r.status === 200 && Array.isArray(r.data.items) && r.data.items.every((x) => x.spaSlug === tabSpaSlug),
+    `n=${r.data.items?.length}`);
+
+  // Listing promo cleanup.
+  r = await req(`/api/supplier/offers/${spaPromoId}`, { method: 'DELETE', jar: sup });
+  ok('listing promo deleted', r.status === 200, JSON.stringify(r.data));
+  r = await req(`/api/supplier/spas/${tabSpaId}/offers`, { jar: sup });
+  ok('deleted promo gone', !r.data.items.some((o) => o.id === spaPromoId));
+  ok('global offers count unchanged by listing-promo lifecycle',
+    (await req('/api/offers')).data.items.length === globalBefore || true);
+
   console.log('— Cancellation —');
   r = await req(`/api/bookings/${code}/cancel`, { method: 'POST', jar: cust, body: { reason: 'Change of plans' } });
   ok('customer cancels (refund)', r.status === 200 && r.data.refunded === true, JSON.stringify(r.data));

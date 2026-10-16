@@ -185,6 +185,19 @@ CREATE TABLE IF NOT EXISTS reviews (
 );
 CREATE INDEX IF NOT EXISTS idx_reviews_spa ON reviews(spa_id, status);
 
+CREATE TABLE IF NOT EXISTS staff (
+  id TEXT PRIMARY KEY,
+  spa_id TEXT NOT NULL REFERENCES spas(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'Therapist',
+  phone TEXT,
+  email TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_spa ON staff(spa_id);
+
 CREATE TABLE IF NOT EXISTS offers (
   id TEXT PRIMARY KEY,
   code TEXT NOT NULL UNIQUE,
@@ -197,7 +210,8 @@ CREATE TABLE IF NOT EXISTS offers (
   starts_at TEXT NOT NULL,
   ends_at TEXT NOT NULL,
   image TEXT,
-  active INTEGER NOT NULL DEFAULT 1
+  active INTEGER NOT NULL DEFAULT 1,
+  spa_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS notifications (

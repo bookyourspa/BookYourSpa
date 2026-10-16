@@ -179,7 +179,7 @@ publicRoutes.get('/packages', async (c) => {
 publicRoutes.get('/offers', async (c) => {
   const today = nowIso().slice(0, 10);
   const rows = await c.env.DB
-    .prepare("SELECT * FROM offers WHERE active = 1 AND starts_at <= ? AND ends_at >= ? ORDER BY value DESC")
+    .prepare("SELECT * FROM offers WHERE active = 1 AND spa_id IS NULL AND starts_at <= ? AND ends_at >= ? ORDER BY value DESC")
     .bind(today, today)
     .all();
   return c.json({

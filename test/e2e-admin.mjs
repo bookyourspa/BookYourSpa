@@ -98,6 +98,28 @@ async function req(path, { method = 'GET', body, jar: j, csrf = true, origin, he
     r.status === 200 && r.data.spas.length > 0 && r.data.spas.every(countsShape),
     JSON.stringify(r.data.spas?.map((s) => ({ name: s.name, counts: s.counts }))));
 
+  // Listing deletion must also clean up its scoped staff rows and listing promos,
+  // and the listing must vanish from the supplier's own list.
+  r = await req(`/api/supplier/spas/${newSpaId}/staff`, { method: 'POST', jar: ced, body: { name: 'Cascade Tester', role: 'Therapist' } });
+  ok('staff created on fresh listing', r.status === 201, JSON.stringify(r.data));
+  const cascadeStaffId = r.data.id;
+  r = await req(`/api/supplier/spas/${newSpaId}/offers`, { method: 'POST', jar: ced, body: {
+    code: `CAS${Date.now().toString(36).toUpperCase().slice(-5)}`, title: 'Cascade promo', discountType: 'percent',
+    value: 10, minSpend: 0, startsAt: '2026-01-01', endsAt: '2026-12-31' } });
+  ok('listing promo created on fresh listing', r.status === 201, JSON.stringify(r.data));
+  const cascadePromoId = r.data.id;
+  r = await req(`/api/supplier/spas/${newSpaId}`, { method: 'DELETE', jar: ced });
+  ok('listing removed (no upcoming bookings)', r.status === 200, JSON.stringify(r.data));
+  r = await req('/api/supplier/spas', { jar: ced });
+  ok('removed listing gone from supplier list', r.status === 200 && !r.data.items.some((s) => s.id === newSpaId),
+    JSON.stringify(r.data.items?.map((s) => s.id)));
+  r = await req(`/api/supplier/spas/${newSpaId}/staff`, { jar: ced });
+  ok('staff endpoint on deleted listing -> 404', r.status === 404, `status=${r.status}`);
+  r = await req(`/api/supplier/staff/${cascadeStaffId}`, { method: 'DELETE', jar: ced });
+  ok('orphaned staff row already gone', r.status === 404, `status=${r.status}`);
+  r = await req(`/api/supplier/offers/${cascadePromoId}`, { method: 'DELETE', jar: ced });
+  ok('orphaned listing promo already gone', r.status === 404, `status=${r.status}`);
+
   console.log('— Settings / SEO management —');
   r = await req('/api/admin/settings', { jar: admin });
   ok('settings load', r.status === 200 && !!r.data.settings.site_title);

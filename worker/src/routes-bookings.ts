@@ -69,9 +69,10 @@ bookingRoutes.post('/bookings', async (c) => {
   const settings = await getSettings(c.env.DB);
   let promo: { discount_type: string; value: number; min_spend: number } | null = null;
   if (v.promoCode) {
+    // Global promos (spa_id IS NULL) apply everywhere; listing promos only on their own spa.
     const row = await c.env.DB
-      .prepare("SELECT discount_type, value, min_spend FROM offers WHERE code = ? AND active = 1 AND starts_at <= ? AND ends_at >= ?")
-      .bind(v.promoCode.toUpperCase(), v.date, v.date)
+      .prepare("SELECT discount_type, value, min_spend FROM offers WHERE code = ? AND active = 1 AND starts_at <= ? AND ends_at >= ? AND (spa_id IS NULL OR spa_id = ?)")
+      .bind(v.promoCode.toUpperCase(), v.date, v.date, spa.id)
       .first<any>();
     if (!row) throw new ApiError(400, 'That promo code is not valid for this date', 'invalid_promo');
     promo = row;

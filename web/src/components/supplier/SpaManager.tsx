@@ -5,6 +5,8 @@ import { api, ApiError } from '@/lib/api';
 import { money, durationLabel, cn } from '@/lib/format';
 import { EmptyState, Field, Modal, Spinner, useToast } from '@/components/ui';
 import { CATEGORIES, DESTINATIONS } from '@/lib/content';
+import { BookingsPanel } from './BookingsPanel';
+import { StaffPanel, PromotionsPanel, ReviewsPanel } from './ListingPanels';
 
 const IMAGE_CHOICES = [
   '/images/spa/aurora-lounge.jpg', '/images/spa/serenity-pool.jpg', '/images/spa/orchid-stones.jpg',
@@ -86,24 +88,9 @@ export function SpaManager({ spaId, mode = 'list', onChanged }: { spaId?: string
         <EmptyState title="Create your first listing" body="Add your spa, its treatments and opening hours — we review new listings within one business day."
           action={<button onClick={openCreate} className="btn-gold">Start a listing</button>} />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="space-y-4">
           {items.map((s) => (
-            <article key={s.id} className="card-lux flex gap-4 p-4">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={s.image} alt={s.name} width={200} height={160} loading="lazy" className="h-28 w-32 shrink-0 rounded-xl object-cover" />
-              <div className="flex min-w-0 flex-1 flex-col">
-                <div className="flex items-start justify-between gap-2">
-                  <h3 className="truncate font-display text-xl">{s.name}</h3>
-                  <span className={cn('badge shrink-0', s.status === 'approved' ? 'bg-sage/20 text-moss' : s.status === 'pending' ? 'bg-gold/15 text-[#8a6d2f]' : 'bg-red-900/10 text-red-900/80')}>{s.status}</span>
-                </div>
-                <p className="text-xs text-stone">{s.city}, {s.country} · {s.counts.treatments} treatments · {s.counts.packages} packages · {s.counts.upcoming} upcoming</p>
-                <p className="mt-1 line-clamp-2 text-sm text-stone">{s.summary}</p>
-                <div className="mt-auto flex gap-2 pt-2">
-                  <button onClick={() => openEdit(s)} className="badge border border-ink/15 text-stone hover:bg-ink/5">Edit details</button>
-                  <button onClick={() => remove(s.id, s.name)} className="badge border border-red-900/30 text-stone hover:bg-red-900/5">Remove</button>
-                </div>
-              </div>
-            </article>
+            <ListingCard key={s.id} s={s} onEdit={() => openEdit(s)} onRemove={() => remove(s.id, s.name)} onChanged={onChanged} />
           ))}
         </div>
       )}
@@ -165,6 +152,64 @@ export function SpaManager({ spaId, mode = 'list', onChanged }: { spaId?: string
   );
 }
 
+/* ————— one listing card with its sub-tabs ————— */
+
+const LISTING_TABS = [
+  { id: 'booking', label: 'Booking' },
+  { id: 'treatment', label: 'Treatment' },
+  { id: 'staff', label: 'Staff' },
+  { id: 'promotion', label: 'Promotion' },
+  { id: 'review', label: 'Review' },
+] as const;
+
+type ListingTab = (typeof LISTING_TABS)[number]['id'];
+
+function ListingCard({ s, onEdit, onRemove, onChanged }: { s: any; onEdit: () => void; onRemove: () => void; onChanged: () => void }) {
+  const [tab, setTab] = useState<ListingTab | null>(null);
+  return (
+    <article className="card-lux space-y-4 p-4">
+      <div className="flex gap-4">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={s.image} alt={s.name} width={200} height={160} loading="lazy" className="h-28 w-32 shrink-0 rounded-xl object-cover" />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="truncate font-display text-xl">{s.name}</h3>
+            <span className={cn('badge shrink-0', s.status === 'approved' ? 'bg-sage/20 text-moss' : s.status === 'pending' ? 'bg-gold/15 text-[#8a6d2f]' : 'bg-red-900/10 text-red-900/80')}>{s.status}</span>
+          </div>
+          <p className="text-xs text-stone">{s.city}, {s.country} · {s.counts.treatments} treatments · {s.counts.packages} packages · {s.counts.upcoming} upcoming</p>
+          <p className="mt-1 line-clamp-2 text-sm text-stone">{s.summary}</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1 rounded-full bg-sand p-1 text-xs">
+        {LISTING_TABS.map((t) => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={cn('rounded-full px-4 py-1.5', tab === t.id ? 'bg-ink text-champagne' : 'text-stone hover:text-ink')}>
+            {t.label}
+          </button>
+        ))}
+        <button onClick={onEdit} className="rounded-full px-4 py-1.5 text-stone hover:text-ink">Edit details</button>
+        <button onClick={onRemove} aria-label={`Remove ${s.name}`} title="Remove listing"
+          className="ml-auto rounded-full p-2 text-red-900/70 hover:bg-red-900/10">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" />
+          </svg>
+        </button>
+      </div>
+
+      {tab && (
+        <div className="border-t border-ink/6 pt-4">
+          {tab === 'booking' && <BookingsPanel spaId={s.id} onChanged={onChanged} />}
+          {tab === 'treatment' && <CatalogManager spaId={s.id} only="treatments" />}
+          {tab === 'staff' && <StaffPanel spaId={s.id} />}
+          {tab === 'promotion' && <PromotionsPanel spaId={s.id} />}
+          {tab === 'review' && <ReviewsPanel slug={s.slug} />}
+        </div>
+      )}
+    </article>
+  );
+}
+
 /* ————— mode: catalog (treatments, packages, hours, blocked dates) ————— */
 
 type Catalog = { treatments: any[]; packages: any[]; hours: any[]; blocked: any[] };
@@ -172,7 +217,7 @@ const DAYS_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const EMPTY_TREATMENT = { name: '', category: 'massage', durationMin: 60, price: 100, description: '', image: '/images/treatment/signature-massage.jpg', active: true };
 const EMPTY_PACKAGE = { name: '', description: '', includes: '', durationMin: 120, price: 250, image: '/images/package/retreat-day.jpg', active: true };
 
-function CatalogManager({ spaId }: { spaId: string }) {
+function CatalogManager({ spaId, only }: { spaId: string; only?: 'treatments' }) {
   const toast = useToast();
   const [data, setData] = useState<Catalog | null>(null);
   const [section, setSection] = useState<'treatments' | 'packages' | 'hours'>('treatments');
@@ -263,14 +308,16 @@ function CatalogManager({ spaId }: { spaId: string }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex rounded-full bg-sand p-1 text-sm sm:w-fit">
-        {(['treatments', 'packages', 'hours'] as const).map((s) => (
-          <button key={s} onClick={() => setSection(s)}
-            className={cn('flex-1 rounded-full px-5 py-2 capitalize sm:flex-none', section === s ? 'bg-ink text-champagne' : 'text-stone hover:text-ink')}>
-            {s === 'hours' ? 'Hours & closures' : `${s} (${s === 'treatments' ? data.treatments.length : data.packages.length})`}
-          </button>
-        ))}
-      </div>
+      {!only && (
+        <div className="flex rounded-full bg-sand p-1 text-sm sm:w-fit">
+          {(['treatments', 'packages', 'hours'] as const).map((s) => (
+            <button key={s} onClick={() => setSection(s)}
+              className={cn('flex-1 rounded-full px-5 py-2 capitalize sm:flex-none', section === s ? 'bg-ink text-champagne' : 'text-stone hover:text-ink')}>
+              {s === 'hours' ? 'Hours & closures' : `${s} (${s === 'treatments' ? data.treatments.length : data.packages.length})`}
+            </button>
+          ))}
+        </div>
+      )}
 
       {section === 'treatments' && (
         <div className="space-y-4">

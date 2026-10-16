@@ -7,6 +7,24 @@ import { newId, nowIso, randomToken } from './util';
 let schemaReady = false;
 let lastSchemaCheck = 0;
 
+const SCHEMA_VERSION = 2;
+const MIGRATIONS: Record<number, string[]> = {
+  2: [
+    'ALTER TABLE offers ADD COLUMN spa_id TEXT',
+    `CREATE TABLE IF NOT EXISTS staff (
+      id TEXT PRIMARY KEY,
+      spa_id TEXT NOT NULL REFERENCES spas(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'Therapist',
+      phone TEXT,
+      email TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    )`,
+    'CREATE INDEX IF NOT EXISTS idx_staff_spa ON staff(spa_id)',
+  ],
+};
+
 export async function ensureSchema(db: D1Database) {
   if (schemaReady && Date.now() - lastSchemaCheck < 1000 * 60 * 30) return;
   let probe: string | null = null;
@@ -20,7 +38,23 @@ export async function ensureSchema(db: D1Database) {
     for (let i = 0; i < statements.length; i += 40) {
       await db.batch(statements.slice(i, i + 40).map((sql) => db.prepare(sql)));
     }
-    await db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '1')").run();
+    await db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '${SCHEMA_VERSION}')`).run();
+  } else {
+    // Existing database: apply migrations strictly in order, one version at a time.
+    let from = Number(probe);
+    if (!Number.isFinite(from) || from < 1) from = 1;
+    for (let version = from + 1; version <= SCHEMA_VERSION; version++) {
+      for (const sql of MIGRATIONS[version] ?? []) {
+        try {
+          await db.prepare(sql).run();
+        } catch (err) {
+          // Another isolate may have applied the same statement first; only
+          // duplicate-object errors are safe to ignore — anything else is real.
+          if (!/duplicate column|already exists/i.test(String(err))) throw err;
+        }
+      }
+      await db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', ?)").bind(String(version)).run();
+    }
   }
   schemaReady = true;
   lastSchemaCheck = Date.now();

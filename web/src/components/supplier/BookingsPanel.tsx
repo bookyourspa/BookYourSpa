@@ -5,7 +5,7 @@ import { api, ApiError } from '@/lib/api';
 import { money, prettyDate, cn, STATUS_STYLES } from '@/lib/format';
 import { EmptyState, Modal, Spinner, useToast } from '@/components/ui';
 
-export function BookingsPanel({ onChanged }: { onChanged: () => void }) {
+export function BookingsPanel({ spaId, onChanged }: { spaId?: string; onChanged: () => void }) {
   const toast = useToast();
   const [status, setStatus] = useState('all');
   const [items, setItems] = useState<any[] | null>(null);
@@ -15,10 +15,13 @@ export function BookingsPanel({ onChanged }: { onChanged: () => void }) {
   const load = useCallback(async () => {
     setItems(null);
     try {
-      const qs = status === 'all' ? '' : `?status=${status}`;
-      setItems((await api<{ items: any[] }>(`/api/supplier/bookings${qs}`)).items);
+      const params = new URLSearchParams();
+      if (status !== 'all') params.set('status', status);
+      if (spaId) params.set('spa', spaId);
+      const qs = params.toString();
+      setItems((await api<{ items: any[] }>(`/api/supplier/bookings${qs ? `?${qs}` : ''}`)).items);
     } catch (e) { toast.show(e instanceof ApiError ? e.message : 'Failed to load bookings', 'error'); setItems([]); }
-  }, [status]);
+  }, [status, spaId]);
 
   useEffect(() => { void load(); }, [load]);
 
