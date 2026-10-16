@@ -7,7 +7,7 @@ import { newId, nowIso, randomToken } from './util';
 let schemaReady = false;
 let lastSchemaCheck = 0;
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const MIGRATIONS: Record<number, string[]> = {
   2: [
     'ALTER TABLE offers ADD COLUMN spa_id TEXT',
@@ -28,6 +28,16 @@ const MIGRATIONS: Record<number, string[]> = {
     'ALTER TABLE staff ADD COLUMN incentive_percent REAL',
     'ALTER TABLE staff ADD COLUMN work_fee_percent REAL',
     'ALTER TABLE staff ADD COLUMN pos_login INTEGER NOT NULL DEFAULT 0',
+  ],
+  4: [
+    `CREATE TABLE IF NOT EXISTS listing_images (
+      id TEXT PRIMARY KEY,
+      spa_id TEXT NOT NULL REFERENCES spas(id) ON DELETE CASCADE,
+      mime TEXT NOT NULL,
+      data BLOB NOT NULL,
+      created_at TEXT NOT NULL
+    )`,
+    'CREATE INDEX IF NOT EXISTS idx_listing_images_spa ON listing_images(spa_id)',
   ],
 };
 

@@ -68,8 +68,8 @@ if (LOCAL) {
 const staticRes = await fetch(`${BASE}/spas/${STATIC_SLUG}/`);
 const staticHtml = await staticRes.text();
 ok('static listing page still 200', staticRes.status === 200, `got ${staticRes.status}`);
-ok('static page keeps its own content', staticHtml.includes(STATIC_NAME));
-ok('static page keeps its JSON-LD', staticHtml.includes('application/ld+json'));
+ok('static page keeps its own content', staticHtml.includes(STATIC_NAME));  ok('static page keeps its JSON-LD', staticHtml.includes('application/ld+json'));
+  ok('static page renders its gallery', staticHtml.includes(`alt="${STATIC_NAME} — photo 1"`));
 
 const res = await fetch(`${BASE}/spas/${DB_ONLY_SLUG}/`);
 const html = await res.text();

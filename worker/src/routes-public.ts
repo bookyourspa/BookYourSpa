@@ -28,6 +28,30 @@ const shapeSpa = (r: any) => ({
 
 publicRoutes.get('/health', (c) => c.json({ ok: true, ts: nowIso() }));
 
+/* ---------- uploaded listing images (cover + gallery) ---------- */
+
+// Bytes live in D1 (listing_images); cover/gallery fields reference short
+// /api/img/<id> URLs so list payloads stay small. Content is immutable per id.
+publicRoutes.get('/img/:id', async (c) => {
+  const id = c.req.param('id');
+  if (!/^img_[A-Za-z0-9_-]+$/.test(id)) throw new ApiError(404, 'Image not found', 'not_found');
+  const row = await c.env.DB
+    .prepare('SELECT mime, data FROM listing_images WHERE id = ?')
+    .bind(id)
+    .first<{ mime: string; data: ArrayBuffer }>();
+  if (!row) throw new ApiError(404, 'Image not found', 'not_found');
+
+  const headers: Record<string, string> = {
+    'content-type': row.mime,
+    'cache-control': 'public, max-age=31536000, immutable',
+    etag: `"${id}"`,
+    'x-content-type-options': 'nosniff',
+  };
+  if (c.req.header('if-none-match') === `"${id}"`) return new Response(null, { status: 304, headers });
+  const bytes = row.data instanceof Uint8Array ? row.data : new Uint8Array(row.data);
+  return new Response(bytes, { headers });
+});
+
 publicRoutes.get('/config', async (c) => {
   const s = await getSettings(c.env.DB);
   const paymentMode = c.env.STRIPE_SECRET_KEY ? 'stripe' : 'demo';

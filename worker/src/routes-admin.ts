@@ -195,7 +195,10 @@ adminRoutes.delete('/spas/:id', async (c) => {
   admin(c);
   const spa = await c.env.DB.prepare('SELECT id FROM spas WHERE id = ?').bind(c.req.param('id')).first<any>();
   if (!spa) throw new ApiError(404, 'Spa not found', 'not_found');
-  await c.env.DB.prepare('DELETE FROM spas WHERE id = ?').bind(spa.id).run();
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM listing_images WHERE spa_id = ?').bind(spa.id),
+    c.env.DB.prepare('DELETE FROM spas WHERE id = ?').bind(spa.id),
+  ]);
   return c.json({ ok: true });
 });
 

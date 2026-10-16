@@ -257,4 +257,14 @@ CREATE TABLE IF NOT EXISTS faqs (
   sort INTEGER NOT NULL DEFAULT 0,
   active INTEGER NOT NULL DEFAULT 1
 );
+
+CREATE TABLE IF NOT EXISTS listing_images (
+  id TEXT PRIMARY KEY,
+  spa_id TEXT NOT NULL REFERENCES spas(id) ON DELETE CASCADE,
+  mime TEXT NOT NULL,
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_listing_images_spa ON listing_images(spa_id);
 `;

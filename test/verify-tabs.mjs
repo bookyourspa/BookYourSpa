@@ -157,9 +157,29 @@ try {
   assert(text().includes('Moderated before publishing') || text().includes('No reviews yet'),
     'Review tab → ReviewsPanel (avg rating + moderated feed)');
 
-  // — 7. Edit details opens the modal —
+  // — 7. Edit details opens the modal (cover link/upload + gallery manager) —
   click(strip.found[5]);
   await waitFor(() => text().includes('Edit listing'), 'edit modal');
+  assert(text().includes('Cover / card image'), 'cover section: link input + device upload');
+  assert([...doc.querySelectorAll('input[type="file"]')].length >= 2, 'file inputs for cover and gallery uploads');
+  const gCount = () => Number(/Gallery — (\d+) of 12/.exec(text())?.[1] ?? -1);
+  const gStart = gCount();
+  assert(gStart >= 0, `gallery manager present (${gStart} of 12)`);
+  const linkInput = [...doc.querySelectorAll('input')].find((i) => i.placeholder === 'Paste an image link');
+  assert(!!linkInput, 'gallery link input present');
+  // React's value tracker swallows .value assignments — use the native setter.
+  const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  nativeSet.call(linkInput, 'https://cdn.example.com/test-photo.jpg');
+  linkInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+  const addBtn = byText('Add link');
+  assert(!!addBtn, 'Add link button present');
+  click(addBtn);
+  await waitFor(() => gCount() === gStart + 1, 'gallery gains the linked image');
+  assert(doc.querySelectorAll('img[alt^="Gallery image"]').length === gStart + 1, 'gallery thumbnail rendered');
+  const rmBtn = doc.querySelector('button[aria-label^="Remove gallery image"]');
+  assert(!!rmBtn, 'per-image remove control present');
+  click(rmBtn);
+  await waitFor(() => gCount() === gStart, 'gallery image removed');
   const cancel = buttons().find((b) => b.textContent.trim() === 'Cancel');
   if (cancel) click(cancel);
 

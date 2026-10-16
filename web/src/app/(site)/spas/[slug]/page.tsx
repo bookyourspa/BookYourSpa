@@ -123,6 +123,23 @@ export default async function SpaDetailPage({ params }: { params: Promise<{ slug
             </div>
           </div>
 
+          {spa.gallery.length > 0 && (
+            <div>
+              <p className="eyebrow">Gallery</p>
+              <h2 className="mt-3 font-display text-4xl">Inside {spa.name}</h2>
+              <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {spa.gallery.map((src, i) => (
+                  <a key={`${src}-${i}`} href={src} target="_blank" rel="noopener noreferrer"
+                    className="group relative block overflow-hidden rounded-xl border border-ink/8 bg-sand">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={src} alt={`${spa.name} — photo ${i + 1}`} width={600} height={450} loading="lazy"
+                      className="aspect-[4/3] w-full object-cover transition-transform duration-500 group-hover:scale-[1.04]" />
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div>
             <p className="eyebrow">Treatments</p>
             <h2 className="mt-3 font-display text-4xl">Menu & prices</h2>

@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import type { AppEnv } from './types';
-import { ApiError, validate, newId, nowIso, money, randomToken } from './util';
+import { ApiError, validate, newId, nowIso, money, randomToken, rateLimit } from './util';
 import { requireRole, ownsSupplier, type SessionUser } from './auth';
 import { getSettings, num } from './db';
 import { sendEmail, emailLayout, h, notify } from './email';
@@ -179,17 +179,75 @@ supplierRoutes.patch('/spas/:id', async (c) => {
   const spa = await ownSpa(c, user, c.req.param('id'));
   const body = await c.req.json().catch(() => null);
   const v = validate(body, spaBodySpec);
+  const cover = v.image ?? spa.image;
+  const gallery = (v.gallery ?? parse<string[]>(spa.gallery, [])).filter(Boolean);
   await c.env.DB
     .prepare(`UPDATE spas SET name = ?, destination = ?, city = ?, country = ?, address = ?, summary = ?, image = ?,
               gallery = ?, facilities = ?, categories = ?, description = ?, price_level = ?, lat = ?, lng = ?, updated_at = ? WHERE id = ?`)
-    .bind(v.name, v.destination, v.city, v.country, v.address, v.summary, v.image ?? spa.image,
-      JSON.stringify(v.gallery ?? parse<string[]>(spa.gallery, [])),
+    .bind(v.name, v.destination, v.city, v.country, v.address, v.summary, cover,
+      JSON.stringify(gallery),
       JSON.stringify(v.facilities ?? parse<string[]>(spa.facilities, [])),
       JSON.stringify(v.categories ?? parse<string[]>(spa.categories, [])),
       JSON.stringify(v.description ?? parse<string[]>(spa.description, [])),
       v.priceLevel ?? spa.price_level, v.lat ?? spa.lat, v.lng ?? spa.lng, nowIso(), spa.id)
     .run();
+
+  // Uploaded images this save no longer references (old cover or removed
+  // gallery entries) are collected here so replaced uploads don't accumulate.
+  const refs = [...new Set([cover, ...gallery])]
+    .map((s) => /^\/api\/img\/(img_[A-Za-z0-9_-]+)$/.exec(String(s))?.[1])
+    .filter((id): id is string => !!id);
+  const notIn = refs.length ? ` AND id NOT IN (${refs.map(() => '?').join(',')})` : '';
+  await c.env.DB.prepare(`DELETE FROM listing_images WHERE spa_id = ?${notIn}`).bind(spa.id, ...refs).run();
+
   return c.json({ ok: true, status: spa.status });
+});
+
+/* ---------- uploaded listing images (cover + gallery) ---------- */
+
+// D1 caps a row at 2 MB — decoded uploads stay well under it. The client
+// downscales photos before sending; this is the server-side hard limit.
+const MAX_IMAGE_BYTES = 700_000;
+const MAX_IMAGES_PER_SPA = 30; // gallery cap is 12 + cover + replacement slack
+
+const sniffImageMime = (b: Uint8Array): string | null => {
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b.length > 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+      b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image/webp';
+  if (b.length > 6 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return 'image/gif';
+  return null; // SVG and anything unrecognised are rejected — images are served same-origin
+};
+
+supplierRoutes.post('/spas/:id/images', async (c) => {
+  const user = approvedSupplier(c);
+  const spa = await ownSpa(c, user, c.req.param('id'));
+
+  const rl = await rateLimit(c.env.DB, 'image-upload', c.var.ip, 30, 60_000);
+  if (!rl.ok) throw new ApiError(429, `Too many uploads — retry in ${rl.retryAfterSec}s`, 'rate_limited');
+
+  const body = await c.req.json().catch(() => null);
+  const dataUrl = typeof body?.dataUrl === 'string' ? body.dataUrl : '';
+  if (dataUrl.length > 1_000_000) throw new ApiError(413, 'Image is too large — 700 KB maximum', 'too_large');
+  const m = /^data:image\/(?:jpeg|png|webp|gif);base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
+  if (!m) throw new ApiError(400, 'Send a base64 data URL of a JPEG, PNG, WebP or GIF image', 'validation');
+
+  const bytes = Uint8Array.from(atob(m[1]), (ch) => ch.charCodeAt(0));
+  if (bytes.length > MAX_IMAGE_BYTES) throw new ApiError(413, 'Image is too large — 700 KB maximum', 'too_large');
+  const mime = sniffImageMime(bytes);
+  if (!mime) throw new ApiError(400, 'Unsupported image — use a JPEG, PNG, WebP or GIF (SVG is not allowed)', 'validation');
+
+  const count = await c.env.DB.prepare('SELECT COUNT(*) AS c FROM listing_images WHERE spa_id = ?')
+    .bind(spa.id).first<{ c: number }>();
+  if (Number(count?.c ?? 0) >= MAX_IMAGES_PER_SPA)
+    throw new ApiError(409, `This listing already has ${MAX_IMAGES_PER_SPA} uploaded images — remove some first`, 'image_limit');
+
+  const id = `img_${randomToken(12)}`;
+  await c.env.DB
+    .prepare('INSERT INTO listing_images (id, spa_id, mime, data, created_at) VALUES (?, ?, ?, ?, ?)')
+    .bind(id, spa.id, mime, bytes, nowIso())
+    .run();
+  return c.json({ id, url: `/api/img/${id}`, mime }, 201);
 });
 
 supplierRoutes.delete('/spas/:id', async (c) => {
@@ -202,6 +260,7 @@ supplierRoutes.delete('/spas/:id', async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare('DELETE FROM staff WHERE spa_id = ?').bind(spa.id),
     c.env.DB.prepare('DELETE FROM offers WHERE spa_id = ?').bind(spa.id),
+    c.env.DB.prepare('DELETE FROM listing_images WHERE spa_id = ?').bind(spa.id),
     c.env.DB.prepare('DELETE FROM spas WHERE id = ?').bind(spa.id),
   ]);
   return c.json({ ok: true });

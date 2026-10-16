@@ -70,6 +70,14 @@ async function req(path, { method = 'GET', body, jar: j, csrf = true, origin, he
   r = await req('/api/supplier/overview', { jar: ced });
   ok('approved supplier reaches dashboard', r.status === 200, `status=${r.status}`);
 
+  // Uploads are ownership-scoped: ced may not attach images to another supplier's listing.
+  r = await req('/api/spas/aurora-wellness-house');
+  const foreignSpaId = r.data.spa?.id;
+  r = await req(`/api/supplier/spas/${foreignSpaId}/images`, { method: 'POST', jar: ced, body: {
+    dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' } });
+  ok('supplier blocked from uploading to another listing (403)',
+    r.status === 403 && r.data.code === 'forbidden', `status=${r.status} ${JSON.stringify(r.data)}`);
+
   console.log('— Spa listing approval —');
   const listingName = `Fresh Springs Bathhouse ${Date.now().toString(36).slice(-4)}`;
   r = await req('/api/supplier/spas', { method: 'POST', jar: ced, body: {

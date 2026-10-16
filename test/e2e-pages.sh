@@ -32,6 +32,7 @@ ok "home has structured FAQ" $(echo "$body" | grep -c "FAQPage" | awk '{print ($
 body=$(curl -s "$BASE/spas/aurora-wellness-house/")
 ok "spa page has LocalBusiness schema" $(echo "$body" | grep -c "HealthAndBeautyBusiness" | awk '{print ($1>0)?1:0}')
 ok "spa page has price offers" $(echo "$body" | grep -c "makesOffer" | awk '{print ($1>0)?1:0}')
+ok "spa page renders gallery" $(echo "$body" | grep -c 'alt="Aurora Wellness House — photo 1"' | awk '{print ($1>0)?1:0}')
 
 # security headers
 h=$(hdr "$BASE/")

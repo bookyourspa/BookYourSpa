@@ -5,6 +5,7 @@ import { api, ApiError } from '@/lib/api';
 import { money, durationLabel, cn } from '@/lib/format';
 import { EmptyState, Field, Modal, Spinner, useToast } from '@/components/ui';
 import { CATEGORIES, DESTINATIONS } from '@/lib/content';
+import { fileToDataUrl } from '@/lib/images';
 import { BookingsPanel } from './BookingsPanel';
 import { StaffPanel, PromotionsPanel, ReviewsPanel } from './ListingPanels';
 
@@ -17,8 +18,10 @@ const IMAGE_CHOICES = [
 
 const emptySpa = {
   name: '', destination: 'london', city: '', country: '', address: '', summary: '',
-  image: IMAGE_CHOICES[0], facilities: '', categories: ['massage'], priceLevel: 3,
+  image: IMAGE_CHOICES[0], gallery: [] as string[], facilities: '', categories: ['massage'], priceLevel: 3,
 };
+
+const isImageUrl = (s: string) => /^(https?:\/\/|\/)\S{2,299}$/.test(String(s ?? ''));
 
 /* ————— mode: list of listings + create/edit ————— */
 
@@ -28,6 +31,8 @@ export function SpaManager({ spaId, mode = 'list', onChanged }: { spaId?: string
   const [editing, setEditing] = useState<any | null>(null);
   const [form, setForm] = useState<any>(emptySpa);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [galleryLink, setGalleryLink] = useState('');
 
   const load = useCallback(async () => {
     try { setItems((await api<{ items: any[] }>('/api/supplier/spas')).items); }
@@ -38,12 +43,13 @@ export function SpaManager({ spaId, mode = 'list', onChanged }: { spaId?: string
 
   if (mode === 'catalog' && spaId) return <CatalogManager spaId={spaId} />;
 
-  const openCreate = () => { setEditing('new'); setForm(emptySpa); };
+  const openCreate = () => { setEditing('new'); setForm(emptySpa); setGalleryLink(''); };
   const openEdit = (s: any) => {
     setEditing(s.id);
+    setGalleryLink('');
     setForm({
       name: s.name, destination: s.destination, city: s.city, country: s.country, address: s.address,
-      summary: s.summary, image: s.image, facilities: (s.facilities || []).join(', '),
+      summary: s.summary, image: s.image, gallery: s.gallery ?? [], facilities: (s.facilities || []).join(', '),
       categories: s.categories?.length ? s.categories : ['massage'], priceLevel: s.priceLevel,
     });
   };
@@ -52,10 +58,14 @@ export function SpaManager({ spaId, mode = 'list', onChanged }: { spaId?: string
     if (form.name.trim().length < 3 || form.summary.trim().length < 10 || !form.city || !form.address) {
       toast.show('Name, city, address and a 10+ character summary are required', 'error'); return;
     }
+    if (!isImageUrl(form.image)) {
+      toast.show('Cover image must be a link (https://… or /images/…)', 'error'); return;
+    }
     setBusy(true);
     const body = {
       ...form,
       facilities: String(form.facilities).split(',').map((f: string) => f.trim()).filter(Boolean),
+      gallery: (form.gallery ?? []).filter(Boolean).slice(0, 12),
       priceLevel: Number(form.priceLevel),
     };
     try {
@@ -75,6 +85,36 @@ export function SpaManager({ spaId, mode = 'list', onChanged }: { spaId?: string
     if (!confirm(`Remove “${name}”? Upcoming bookings must be cancelled first.`)) return;
     try { await api(`/api/supplier/spas/${id}`, { method: 'DELETE' }); toast.show('Listing removed'); await load(); onChanged(); }
     catch (e) { toast.show(e instanceof ApiError ? e.message : 'Delete failed', 'error'); }
+  };
+
+  const uploadImages = async (files: FileList | null, target: 'cover' | 'gallery') => {
+    if (!files || files.length === 0) return;
+    if (editing === 'new') { toast.show('Save the listing first, then upload photos', 'error'); return; }
+    setUploading(true);
+    try {
+      let added = 0;
+      for (const file of Array.from(files)) {
+        if (target === 'gallery' && form.gallery.length + added >= 12) {
+          toast.show('Gallery is full — 12 images max', 'error'); break;
+        }
+        const dataUrl = await fileToDataUrl(file);
+        const res = await api<{ url: string }>(`/api/supplier/spas/${editing}/images`, { method: 'POST', body: { dataUrl } });
+        if (target === 'cover') setForm((f: any) => ({ ...f, image: res.url }));
+        else { setForm((f: any) => ({ ...f, gallery: [...f.gallery, res.url] })); added++; }
+      }
+      if (target === 'cover') toast.show('Cover photo uploaded');
+      else if (added > 0) toast.show(`${added} photo${added === 1 ? '' : 's'} added to gallery`);
+    } catch (e) {
+      toast.show(e instanceof ApiError ? e.message : 'Upload failed', 'error');
+    } finally { setUploading(false); }
+  };
+
+  const addGalleryLink = () => {
+    const url = galleryLink.trim();
+    if (!isImageUrl(url)) { toast.show('Paste a valid image link (https://… or /images/…)', 'error'); return; }
+    if (form.gallery.length >= 12) { toast.show('Gallery is full — 12 images max', 'error'); return; }
+    setForm((f: any) => ({ ...f, gallery: [...f.gallery, url] }));
+    setGalleryLink('');
   };
 
   return (
@@ -130,15 +170,70 @@ export function SpaManager({ spaId, mode = 'list', onChanged }: { spaId?: string
               })}
             </div>
           </Field>
-          <Field label="Cover photo">
-            <div className="grid grid-cols-4 gap-2">
-              {IMAGE_CHOICES.map((img) => (
-                <button key={img} type="button" onClick={() => setForm((f: any) => ({ ...f, image: img }))}
-                  className={cn('overflow-hidden rounded-lg border-2 transition-colors', form.image === img ? 'border-gold' : 'border-transparent')}>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={img} alt="Cover option" width={120} height={80} loading="lazy" className="h-16 w-full object-cover" />
-                </button>
-              ))}
+          <Field label="Cover / card image" hint="Used on cards, search results and your page hero — paste a link or upload from your device">
+            <div className="space-y-3">
+              <div className="flex items-start gap-3">
+                <div className="h-24 w-36 shrink-0 overflow-hidden rounded-xl border border-ink/10 bg-sand">
+                  {form.image ? (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img src={form.image} alt="Cover preview" width={288} height={192}
+                      onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }}
+                      className="h-full w-full object-cover" />
+                  ) : null}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <label className={cn('btn-outline inline-flex w-fit cursor-pointer !px-4 !py-2 text-xs', (uploading || editing === 'new') && 'pointer-events-none opacity-50')}>
+                    {uploading ? 'Uploading…' : '⬆ Upload from device'}
+                    <input type="file" accept="image/*" className="hidden" disabled={uploading || editing === 'new'}
+                      onChange={(e) => { void uploadImages(e.target.files, 'cover'); e.target.value = ''; }} />
+                  </label>
+                  <p className="max-w-[14rem] text-[11px] leading-snug text-stone">
+                    {editing === 'new' ? 'Save the listing first to upload — links work now.' : 'JPG, PNG or WebP — resized automatically.'}
+                  </p>
+                </div>
+              </div>
+              <input value={form.image} maxLength={300} placeholder="https://…/cover.jpg"
+                onChange={(e) => setForm((f: any) => ({ ...f, image: e.target.value }))} className="input-lux" />
+              <div className="grid grid-cols-4 gap-2">
+                {IMAGE_CHOICES.map((img) => (
+                  <button key={img} type="button" onClick={() => setForm((f: any) => ({ ...f, image: img }))}
+                    className={cn('overflow-hidden rounded-lg border-2 transition-colors', form.image === img ? 'border-gold' : 'border-transparent')}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={img} alt="Cover option" width={120} height={80} loading="lazy" className="h-16 w-full object-cover" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          </Field>
+          <Field label={`Gallery — ${form.gallery.length} of 12`} hint="Photos in the gallery section of your listing page — add by link or upload">
+            <div className="space-y-3">
+              {form.gallery.length > 0 && (
+                <div className="grid grid-cols-4 gap-2 sm:grid-cols-6">
+                  {form.gallery.map((src: string, i: number) => (
+                    <div key={`${src}-${i}`} className="relative overflow-hidden rounded-lg border border-ink/10 bg-sand">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={src} alt={`Gallery image ${i + 1}`} width={160} height={120} loading="lazy"
+                        onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }}
+                        className="aspect-[4/3] w-full object-cover" />
+                      <button type="button" aria-label={`Remove gallery image ${i + 1}`}
+                        onClick={() => setForm((f: any) => ({ ...f, gallery: f.gallery.filter((_: unknown, j: number) => j !== i) }))}
+                        className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-ink/85 text-xs leading-none text-champagne hover:bg-ink">×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <input value={galleryLink} maxLength={500} placeholder="Paste an image link"
+                  onChange={(e) => setGalleryLink(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addGalleryLink(); } }}
+                  className="input-lux" />
+                <button type="button" onClick={addGalleryLink} className="btn-outline !px-4 !py-2 text-xs whitespace-nowrap">Add link</button>
+              </div>
+              <label className={cn('btn-outline inline-flex w-fit cursor-pointer !px-4 !py-2 text-xs', (uploading || editing === 'new') && 'pointer-events-none opacity-50')}>
+                {uploading ? 'Uploading…' : '+ Upload photos'}
+                <input type="file" accept="image/*" multiple className="hidden" disabled={uploading || editing === 'new'}
+                  onChange={(e) => { void uploadImages(e.target.files, 'gallery'); e.target.value = ''; }} />
+              </label>
             </div>
           </Field>
           <div className="flex gap-2 pt-2">

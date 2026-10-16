@@ -151,6 +151,19 @@ export default function SpaFallbackPage() {
 function renderSections(d: Loaded): string {
   const { spa, treatments, packages, reviews } = d;
 
+  const gallery = Array.isArray(spa.gallery) ? spa.gallery.filter(Boolean) : [];
+  const galleryHtml = gallery.length ? `
+    <div>
+      <p class="eyebrow">Gallery</p>
+      <h2 class="mt-3 font-display text-4xl">Inside ${esc(spa.name)}</h2>
+      <div class="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
+        ${gallery.map((src: string, i: number) => `
+          <a href="${esc(src)}" target="_blank" rel="noopener noreferrer" class="group relative block overflow-hidden rounded-xl border border-ink/8 bg-sand">
+            <img src="${esc(src)}" alt="${esc(spa.name)} — photo ${i + 1}" width="600" height="450" loading="lazy" class="aspect-[4/3] w-full object-cover transition-transform duration-500 group-hover:scale-[1.04]" />
+          </a>`).join('')}
+      </div>
+    </div>` : '';
+
   const treatmentsHtml = treatments.length ? `
     <div>
       <p class="eyebrow">Treatments</p>
@@ -238,7 +251,7 @@ function renderSections(d: Loaded): string {
       </div>
     </div>` : '';
 
-  return [treatmentsHtml, packagesHtml, facilitiesHoursHtml, reviewsHtml]
+  return [galleryHtml, treatmentsHtml, packagesHtml, facilitiesHoursHtml, reviewsHtml]
     .filter(Boolean)
     .map((html) => `<div class="space-y-12">${html}</div>`)
     .join('');

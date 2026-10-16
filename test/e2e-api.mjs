@@ -189,9 +189,86 @@ const futureDate = (daysAhead) => {
   r = await req('/api/supplier/spas', { jar: sup });
   ok('supplier lists own spa', r.data.items.length === 1 && r.data.items[0].slug === 'aurora-wellness-house');
 
+  console.log('— Cover & gallery images —');
+  const TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  r = await req('/api/img/img_does_not_exist');
+  ok('unknown uploaded image -> 404', r.status === 404, `status=${r.status}`);
+
+  // A fresh listing carries the whole flow so no existing listing is touched.
+  const imageFlow = {
+    name: `Image Flow ${UNIQUE}`, destination: 'london', city: 'Bath', country: 'United Kingdom',
+    address: '3 Gallery Lane, Bath BA1 1AA',
+    summary: 'A listing created to exercise cover and gallery uploads.',
+  };
+  r = await req('/api/supplier/spas', { method: 'POST', jar: sup, body: imageFlow });
+  ok('image-test listing created (pending)', r.status === 201 && r.data.status === 'pending', JSON.stringify(r.data));
+  const imgSpaId = r.data.id;
+  const imgSpaSlug = r.data.slug;
+
+  r = await req(`/api/supplier/spas/${imgSpaId}/images`, { method: 'POST', body: { dataUrl: `data:image/png;base64,${TINY_PNG}` } });
+  ok('upload without session -> 401', r.status === 401, `status=${r.status}`);
+
+  r = await req(`/api/supplier/spas/${imgSpaId}/images`, { method: 'POST', jar: sup, body: { dataUrl: 'javascript:alert(1)' } });
+  ok('non-image payload -> 400', r.status === 400 && r.data.code === 'validation', JSON.stringify(r.data));
+
+  r = await req(`/api/supplier/spas/${imgSpaId}/images`, { method: 'POST', jar: sup, body: { dataUrl: 'data:image/png;base64,' + Buffer.from('this is definitely not a png image').toString('base64') } });
+  ok('magic-byte mismatch -> 400', r.status === 400, JSON.stringify(r.data));
+
+  r = await req(`/api/supplier/spas/${imgSpaId}/images`, { method: 'POST', jar: sup, body: { dataUrl: `data:image/png;base64,${TINY_PNG}` } });
+  ok('image uploaded (201 with /api/img URL)', r.status === 201 && /^\/api\/img\/img_[A-Za-z0-9_-]+$/.test(r.data?.url ?? ''), JSON.stringify(r.data));
+  const upUrl = r.data.url, upId = r.data.id;
+
+  const imgRes = await fetch(BASE + upUrl);
+  const imgBytes = Buffer.from(await imgRes.arrayBuffer());
+  ok('uploaded image serves its exact bytes',
+    imgRes.status === 200 && imgRes.headers.get('content-type') === 'image/png' && imgBytes.equals(Buffer.from(TINY_PNG, 'base64')),
+    `status=${imgRes.status} type=${imgRes.headers.get('content-type')} bytes=${imgBytes.length}`);
+  ok('image served with immutable cache', (imgRes.headers.get('cache-control') ?? '').includes('immutable'));
+  const reval = await fetch(BASE + upUrl, { headers: { 'if-none-match': `"${upId}"` } });
+  ok('etag revalidation -> 304', reval.status === 304, `status=${reval.status}`);
+
+  const imagePatch = {
+    ...imageFlow,
+    image: upUrl,
+    gallery: [upUrl, '/images/spa/zen-hands.jpg'],
+  };
+  r = await req(`/api/supplier/spas/${imgSpaId}`, { method: 'PATCH', jar: sup, body: imagePatch });
+  ok('listing saved with uploaded cover + gallery', r.status === 200, JSON.stringify(r.data));
+
+  r = await req('/api/supplier/spas', { jar: sup });
+  const savedImg = r.data.items.find((s) => s.id === imgSpaId);
+  ok('supplier list carries uploaded cover + gallery',
+    savedImg?.image === upUrl && (savedImg?.gallery ?? []).includes(upUrl),
+    JSON.stringify({ image: savedImg?.image, gallery: savedImg?.gallery }));
+
+  // A second upload the next save drops must be collected — no orphaned bytes.
+  r = await req(`/api/supplier/spas/${imgSpaId}/images`, { method: 'POST', jar: sup, body: { dataUrl: `data:image/png;base64,${TINY_PNG}` } });
+  const dropUrl = r.data.url;
+  ok('second upload ok', r.status === 201, JSON.stringify(r.data));
+  r = await req(`/api/supplier/spas/${imgSpaId}`, { method: 'PATCH', jar: sup, body: imagePatch });
+  ok('re-save without the second upload (200)', r.status === 200);
+  r = await req(dropUrl);
+  ok('unreferenced upload collected on save', r.status === 404, `status=${r.status}`);
+  r = await req(upUrl);
+  ok('referenced upload kept', r.status === 200, `status=${r.status}`);
+
+  // Approve so the PUBLIC detail must carry the uploaded cover + gallery.
+  r = await req(`/api/admin/spas/${imgSpaId}`, { method: 'PATCH', jar: resetJar, body: { status: 'approved' } });
+  ok('admin approves image-test listing', r.status === 200, JSON.stringify(r.data));
+  r = await req(`/api/spas/${imgSpaSlug}`);
+  ok('public detail carries uploaded cover + gallery',
+    r.status === 200 && r.data.spa?.image === upUrl && (r.data.spa?.gallery ?? []).includes(upUrl),
+    JSON.stringify({ image: r.data?.spa?.image, gallery: r.data?.spa?.gallery }));
+
+  r = await req(`/api/supplier/spas/${imgSpaId}`, { method: 'DELETE', jar: sup });
+  ok('image-test listing removed', r.status === 200, JSON.stringify(r.data));
+  r = await req(upUrl);
+  ok('listing deletion collects its uploads', r.status === 404, `status=${r.status}`);
+
   console.log('— Listing sub-tabs: staff / promotions / reviews / booking filter —');
-  const tabSpaId = r.data.items[0].id;
-  const tabSpaSlug = r.data.items[0].slug;
+  const tabSpaId = (await req('/api/supplier/spas', { jar: sup })).data.items.find((s) => s.slug === 'aurora-wellness-house').id;
+  const tabSpaSlug = 'aurora-wellness-house';
 
   // Staff CRUD with role selector + compensation rules
   r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { jar: sup });
