@@ -94,16 +94,44 @@ app.notFound(async (c) => {
     if (!user) return c.redirect(`/login?next=${encodeURIComponent(path)}`, 302);
     if (user.role !== wanted) return c.redirect(homeFor(user.role), 302);
   }
+  let res: Response | null = null;
   if (c.env.ASSETS) {
-    const res = await c.env.ASSETS.fetch(c.req.raw);
+    res = await c.env.ASSETS.fetch(c.req.raw);
     // Normalise the asset server's trailing-slash redirect (307) into the final response.
     if ((res.status === 307 || res.status === 308) && res.headers.get('location')) {
       const base = new URL(c.req.url);
       const target = new URL(res.headers.get('location')!, base).toString();
-      return c.env.ASSETS.fetch(target);
+      res = await c.env.ASSETS.fetch(target);
     }
-    return res;
   }
+
+  // DB-only listing pages: an approved listing created after the static export
+  // was built has no prerendered HTML, so the asset lookup above 404'd. Serve
+  // the neutral /spa-fallback/ shell (title/meta corrected here, no listing
+  // data baked in) — its client reads the real pathname and fills the page
+  // from /api/spas/<slug> on mount. Runs only on a real asset miss so listings
+  // that DO have exported HTML keep their prerendered pages untouched.
+  if (res?.status === 404 && c.env.ASSETS) {
+    const spaPath = /^\/spas\/([^\/]+)\/?$/.exec(path);
+    if (spaPath) {
+      const slug = decodeURIComponent(spaPath[1]);
+      const spa = await c.env.DB
+        .prepare("SELECT name, city, summary FROM spas WHERE slug = ? AND status = 'approved'")
+        .bind(slug)
+        .first<{ name: string; city: string; summary: string }>();
+      if (spa) {
+        const shell = await c.env.ASSETS.fetch(new URL('/spa-fallback/', c.req.url).toString());
+        if (shell.status === 200) {
+          // Serve the neutral shell verbatim: mutating <title>/<meta> here would
+          // fight React 19's hoisted-head hydration (error #418). The client
+          // sets title/description/canonical from the same DB row after boot.
+          return shell;
+        }
+      }
+    }
+  }
+
+  if (res) return res;
   return c.json({ error: 'Not found', code: 'not_found' }, 404);
 });
 
