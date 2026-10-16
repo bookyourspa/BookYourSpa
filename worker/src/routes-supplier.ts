@@ -199,7 +199,11 @@ supplierRoutes.delete('/spas/:id', async (c) => {
     .prepare("SELECT COUNT(*) AS c FROM bookings WHERE spa_id = ? AND status IN ('pending','confirmed') AND booking_date >= ?")
     .bind(spa.id, nowIso().slice(0, 10)).first<any>();
   if (Number(future?.c ?? 0) > 0) throw new ApiError(409, 'Cancel upcoming bookings before removing this listing', 'has_bookings');
-  await c.env.DB.prepare('DELETE FROM spas WHERE id = ?').bind(spa.id).run();
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM staff WHERE spa_id = ?').bind(spa.id),
+    c.env.DB.prepare('DELETE FROM offers WHERE spa_id = ?').bind(spa.id),
+    c.env.DB.prepare('DELETE FROM spas WHERE id = ?').bind(spa.id),
+  ]);
   return c.json({ ok: true });
 });
 
@@ -331,6 +335,143 @@ supplierRoutes.delete('/packages/:id', async (c) => {
   return c.json({ ok: true });
 });
 
+/* ---------- staff ---------- */
+
+supplierRoutes.get('/spas/:id/staff', async (c) => {
+  const user = approvedSupplier(c);
+  const spa = await ownSpa(c, user, c.req.param('id'));
+  const rows = await c.env.DB
+    .prepare('SELECT id, name, role, phone, email, active, created_at FROM staff WHERE spa_id = ? ORDER BY active DESC, name')
+    .bind(spa.id)
+    .all();
+  return c.json({ items: rows.results });
+});
+
+supplierRoutes.post('/spas/:id/staff', async (c) => {
+  const user = approvedSupplier(c);
+  const spa = await ownSpa(c, user, c.req.param('id'));
+  const body = await c.req.json().catch(() => null);
+  const v = validate(body, {
+    name: { required: true, min: 2, max: 80 },
+    role: { max: 40 },
+    phone: { max: 40 },
+    email: { type: 'email', max: 120 },
+    active: { type: 'boolean' },
+  });
+  const id = newId('stf');
+  await c.env.DB
+    .prepare('INSERT INTO staff (id, spa_id, name, role, phone, email, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(id, spa.id, v.name, v.role || 'Therapist', v.phone || null, v.email || null, v.active === false ? 0 : 1, nowIso())
+    .run();
+  return c.json({ id }, 201);
+});
+
+supplierRoutes.patch('/staff/:id', async (c) => {
+  const user = approvedSupplier(c);
+  const row = await c.env.DB.prepare('SELECT * FROM staff WHERE id = ?').bind(c.req.param('id')).first<any>();
+  if (!row) throw new ApiError(404, 'Team member not found', 'not_found');
+  await ownSpa(c, user, row.spa_id);
+  const body = await c.req.json().catch(() => null);
+  const v = validate(body, {
+    name: { min: 2, max: 80 }, role: { max: 40 }, phone: { max: 40 },
+    email: { type: 'email', max: 120 }, active: { type: 'boolean' },
+  });
+  // validate() maps blank values to undefined; read the raw body so an
+  // explicitly-blank phone/email clears the stored value instead of keeping it.
+  const raw = (body ?? {}) as Record<string, unknown>;
+  const optStr = (key: string, fallback: string | null) =>
+    key in raw ? String(raw[key] ?? '').trim() || null : fallback;
+  await c.env.DB
+    .prepare('UPDATE staff SET name = ?, role = ?, phone = ?, email = ?, active = ? WHERE id = ?')
+    .bind(v.name ?? row.name, v.role ?? row.role, optStr('phone', row.phone), optStr('email', row.email),
+      v.active === undefined ? row.active : v.active ? 1 : 0, row.id)
+    .run();
+  return c.json({ ok: true });
+});
+
+supplierRoutes.delete('/staff/:id', async (c) => {
+  const user = approvedSupplier(c);
+  const row = await c.env.DB.prepare('SELECT spa_id FROM staff WHERE id = ?').bind(c.req.param('id')).first<any>();
+  if (!row) throw new ApiError(404, 'Team member not found', 'not_found');
+  await ownSpa(c, user, row.spa_id);
+  await c.env.DB.prepare('DELETE FROM staff WHERE id = ?').bind(c.req.param('id')).run();
+  return c.json({ ok: true });
+});
+
+/* ---------- spa promotions (listing-scoped offers) ---------- */
+
+supplierRoutes.get('/spas/:id/offers', async (c) => {
+  const user = approvedSupplier(c);
+  const spa = await ownSpa(c, user, c.req.param('id'));
+  const rows = await c.env.DB
+    .prepare('SELECT * FROM offers WHERE spa_id = ? ORDER BY active DESC, ends_at DESC')
+    .bind(spa.id)
+    .all();
+  return c.json({ items: rows.results });
+});
+
+supplierRoutes.post('/spas/:id/offers', async (c) => {
+  const user = approvedSupplier(c);
+  const spa = await ownSpa(c, user, c.req.param('id'));
+  const body = await c.req.json().catch(() => null);
+  const v = validate(body, {
+    code: { required: true, min: 3, max: 30 },
+    title: { required: true, min: 3, max: 120 },
+    description: { max: 300 },
+    discountType: { required: true, enum: ['percent', 'fixed'] },
+    value: { required: true, type: 'number', min: 1, max: 10000 },
+    minSpend: { type: 'number', min: 0, max: 100000 },
+    startsAt: { required: true, type: 'date' },
+    endsAt: { required: true, type: 'date' },
+    active: { type: 'boolean' },
+  });
+  if (v.endsAt < v.startsAt) throw new ApiError(400, 'End date must be after start date', 'validation');
+  const code = v.code.toUpperCase();
+  const dupe = await c.env.DB.prepare('SELECT 1 AS x FROM offers WHERE code = ?').bind(code).first();
+  if (dupe) throw new ApiError(409, 'That code already exists', 'duplicate');
+  const id = newId('off');
+  await c.env.DB
+    .prepare(`INSERT INTO offers (id, code, title, description, discount_type, value, min_spend, destination,
+              starts_at, ends_at, image, active, spa_id) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`)
+    .bind(id, code, v.title, v.description ?? '', v.discountType, v.value, v.minSpend ?? 0,
+      v.startsAt, v.endsAt, '/images/treatment/signature-massage.jpg', v.active === false ? 0 : 1, spa.id)
+    .run();
+  return c.json({ id, code }, 201);
+});
+
+supplierRoutes.patch('/offers/:id', async (c) => {
+  const user = approvedSupplier(c);
+  const row = await c.env.DB.prepare('SELECT * FROM offers WHERE id = ?').bind(c.req.param('id')).first<any>();
+  // Global (admin-created) promos have no spa_id and are not supplier-editable.
+  if (!row || !row.spa_id) throw new ApiError(404, 'Promotion not found', 'not_found');
+  await ownSpa(c, user, row.spa_id);
+  const body = await c.req.json().catch(() => null);
+  const v = validate(body, {
+    title: { min: 3, max: 120 }, description: { max: 300 }, discountType: { enum: ['percent', 'fixed'] },
+    value: { type: 'number', min: 1, max: 10000 }, minSpend: { type: 'number', min: 0, max: 100000 },
+    startsAt: { type: 'date' }, endsAt: { type: 'date' }, active: { type: 'boolean' },
+  });
+  const starts = v.startsAt ?? row.starts_at;
+  const ends = v.endsAt ?? row.ends_at;
+  if (ends < starts) throw new ApiError(400, 'End date must be after start date', 'validation');
+  await c.env.DB
+    .prepare('UPDATE offers SET title = ?, description = ?, discount_type = ?, value = ?, min_spend = ?, starts_at = ?, ends_at = ?, active = ? WHERE id = ?')
+    .bind(v.title ?? row.title, v.description ?? row.description, v.discountType ?? row.discount_type,
+      v.value ?? row.value, v.minSpend ?? row.min_spend, starts, ends,
+      v.active === undefined ? row.active : v.active ? 1 : 0, row.id)
+    .run();
+  return c.json({ ok: true });
+});
+
+supplierRoutes.delete('/offers/:id', async (c) => {
+  const user = approvedSupplier(c);
+  const row = await c.env.DB.prepare('SELECT spa_id FROM offers WHERE id = ?').bind(c.req.param('id')).first<any>();
+  if (!row || !row.spa_id) throw new ApiError(404, 'Promotion not found', 'not_found');
+  await ownSpa(c, user, row.spa_id);
+  await c.env.DB.prepare('DELETE FROM offers WHERE id = ?').bind(c.req.param('id')).run();
+  return c.json({ ok: true });
+});
+
 /* ---------- availability management ---------- */
 
 supplierRoutes.put('/spas/:id/hours', async (c) => {
@@ -388,10 +529,12 @@ supplierRoutes.get('/bookings', async (c) => {
   const user = approvedSupplier(c);
   const status = c.req.query('status');
   const date = c.req.query('date');
+  const spa = c.req.query('spa');
   const where = ['s.supplier_id = ?'];
   const binds: unknown[] = [user.supplier_id];
   if (status && status !== 'all') { where.push('b.status = ?'); binds.push(status); }
   if (date) { where.push('b.booking_date = ?'); binds.push(date); }
+  if (spa) { where.push('b.spa_id = ?'); binds.push(spa); }
   const rows = await c.env.DB
     .prepare(`SELECT b.*, s.name AS spa_name, s.slug AS spa_slug, s.city AS spa_city, s.image AS spa_image, s.address AS spa_address,
                      u.name AS customer_name, u.email AS customer_email, u.phone AS customer_phone
