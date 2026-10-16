@@ -7,7 +7,21 @@ import { EmptyState, Field, Modal, Spinner, useToast } from '@/components/ui';
 
 /* ————— Staff ————— */
 
-const EMPTY_STAFF = { name: '', role: 'Therapist', phone: '', email: '', active: true };
+const STAFF_ROLES = ['admin', 'cashier', 'therapist', 'regular'] as const;
+const STAFF_ROLE_LABELS: Record<string, string> = { admin: 'Admin', cashier: 'Cashier', therapist: 'Therapist', regular: 'Regular' };
+
+const EMPTY_STAFF = {
+  name: '', role: 'therapist', phone: '', email: '', active: true,
+  monthlySalary: '', incentivePercent: '', workFeePercent: '', posLogin: false,
+};
+
+const paySummary = (m: any) => {
+  const bits: string[] = [];
+  if (m.monthly_salary != null) bits.push(`${money(m.monthly_salary)}/mo`);
+  if (m.incentive_percent != null) bits.push(`${m.incentive_percent}% incentive`);
+  if (m.work_fee_percent != null) bits.push(`${m.work_fee_percent}% job fee`);
+  return bits.join(' · ') || '—';
+};
 
 export function StaffPanel({ spaId }: { spaId: string }) {
   const toast = useToast();
@@ -27,9 +41,16 @@ export function StaffPanel({ spaId }: { spaId: string }) {
   const save = async () => {
     if (form.name.trim().length < 2) { toast.show('A name is required', 'error'); return; }
     setBusy(true);
+    const body = {
+      name: form.name.trim(), role: form.role, phone: form.phone, email: form.email, active: form.active,
+      monthlySalary: form.monthlySalary === '' ? null : Number(form.monthlySalary),
+      incentivePercent: form.incentivePercent === '' ? null : Number(form.incentivePercent),
+      workFeePercent: form.role === 'therapist' ? (form.workFeePercent === '' ? null : Number(form.workFeePercent)) : null,
+      posLogin: ['admin', 'cashier'].includes(form.role) && form.posLogin,
+    };
     try {
-      if (editing === 'new') await api(`/api/supplier/spas/${spaId}/staff`, { method: 'POST', body: form });
-      else await api(`/api/supplier/staff/${editing.id}`, { method: 'PATCH', body: form });
+      if (editing === 'new') await api(`/api/supplier/spas/${spaId}/staff`, { method: 'POST', body });
+      else await api(`/api/supplier/staff/${editing.id}`, { method: 'PATCH', body });
       setEditing(null); setForm(EMPTY_STAFF); toast.show('Team member saved'); await load();
     } catch (e) { toast.show(e instanceof ApiError ? e.message : 'Save failed', 'error'); }
     finally { setBusy(false); }
@@ -53,17 +74,27 @@ export function StaffPanel({ spaId }: { spaId: string }) {
       ) : (
         <div className="overflow-x-auto">
           <table className="table-lux">
-            <thead><tr><th>Name</th><th>Role</th><th>Contact</th><th>Active</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Role</th><th>Pay</th><th>Contact</th><th>Active</th><th></th></tr></thead>
             <tbody>
               {items.map((m) => (
                 <tr key={m.id}>
                   <td className="font-medium">{m.name}</td>
-                  <td className="text-xs">{m.role}</td>
+                  <td className="text-xs">
+                    {STAFF_ROLE_LABELS[m.role] ?? m.role}
+                    {m.pos_login ? <span className="badge ml-1 bg-gold/15 text-[#8a6d2f]">POS</span> : null}
+                  </td>
+                  <td className="text-xs text-stone">{paySummary(m)}</td>
                   <td className="text-xs text-stone">{[m.phone, m.email].filter(Boolean).join(' · ') || '—'}</td>
                   <td><span className={cn('badge', m.active ? 'bg-sage/20 text-moss' : 'bg-stone/15 text-stone')}>{m.active ? 'live' : 'hidden'}</span></td>
                   <td>
                     <div className="flex gap-1">
-                      <button onClick={() => { setEditing(m); setForm({ name: m.name, role: m.role ?? 'Therapist', phone: m.phone ?? '', email: m.email ?? '', active: !!m.active }); }}
+                      <button onClick={() => { setEditing(m); setForm({
+                        name: m.name, role: m.role ?? 'regular', phone: m.phone ?? '', email: m.email ?? '', active: !!m.active,
+                        monthlySalary: m.monthly_salary == null ? '' : String(m.monthly_salary),
+                        incentivePercent: m.incentive_percent == null ? '' : String(m.incentive_percent),
+                        workFeePercent: m.work_fee_percent == null ? '' : String(m.work_fee_percent),
+                        posLogin: !!m.pos_login,
+                      }); }}
                         className="badge border border-ink/15 text-stone hover:bg-ink/5">Edit</button>
                       <button onClick={() => remove(m)} className="badge border border-red-900/30 text-stone hover:bg-red-900/5">Remove</button>
                     </div>
@@ -79,13 +110,38 @@ export function StaffPanel({ spaId }: { spaId: string }) {
         <div className="space-y-4">
           <Field label="Name"><input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className="input-lux" /></Field>
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Role"><input value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))} className="input-lux" placeholder="Therapist" /></Field>
+            <Field label="Role">
+              <select value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))} className="input-lux">
+                {STAFF_ROLES.map((r) => <option key={r} value={r}>{STAFF_ROLE_LABELS[r]}</option>)}
+              </select>
+            </Field>
             <Field label="Active"><select value={form.active ? '1' : '0'} onChange={(e) => setForm((f) => ({ ...f, active: e.target.value === '1' }))} className="input-lux"><option value="1">Yes</option><option value="0">No</option></select></Field>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <Field label="Phone"><input value={form.phone} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} className="input-lux" /></Field>
             <Field label="Email"><input type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} className="input-lux" /></Field>
           </div>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Monthly salary" hint="Gross per month">
+              <input type="number" min={0} value={form.monthlySalary} onChange={(e) => setForm((f) => ({ ...f, monthlySalary: e.target.value }))} className="input-lux" placeholder="0" />
+            </Field>
+            <Field label="Incentive / services %" hint="0–100 of services sold">
+              <input type="number" min={0} max={100} value={form.incentivePercent} onChange={(e) => setForm((f) => ({ ...f, incentivePercent: e.target.value }))} className="input-lux" placeholder="0" />
+            </Field>
+          </div>
+          {form.role === 'therapist' && (
+            <Field label="Work / job fee %" hint="Therapist only — percentage of each service worked">
+              <input type="number" min={0} max={100} value={form.workFeePercent} onChange={(e) => setForm((f) => ({ ...f, workFeePercent: e.target.value }))} className="input-lux" placeholder="0" />
+            </Field>
+          )}
+          {(form.role === 'admin' || form.role === 'cashier') && (
+            <Field label="Spa POS login access" hint="Admin and Cashier can sign in to the Spa POS">
+              <select value={form.posLogin ? '1' : '0'} onChange={(e) => setForm((f) => ({ ...f, posLogin: e.target.value === '1' }))} className="input-lux">
+                <option value="1">Yes</option>
+                <option value="0">No</option>
+              </select>
+            </Field>
+          )}
           <div className="flex gap-2">
             <button onClick={save} disabled={busy} className="btn-ink !px-6 !py-2.5 text-xs">{busy ? 'Saving…' : 'Save member'}</button>
             <button onClick={() => setEditing(null)} className="btn-outline !px-5 !py-2.5 text-xs">Cancel</button>

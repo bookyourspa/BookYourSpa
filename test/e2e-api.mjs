@@ -193,26 +193,53 @@ const futureDate = (daysAhead) => {
   const tabSpaId = r.data.items[0].id;
   const tabSpaSlug = r.data.items[0].slug;
 
-  // Staff CRUD
+  // Staff CRUD with role selector + compensation rules
   r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { jar: sup });
   ok('staff list loads', r.status === 200 && Array.isArray(r.data.items), JSON.stringify(r.data).slice(0, 80));
+  r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { method: 'POST', jar: sup, body: { name: 'No Role Here', role: 'Janitor' } });
+  ok('invalid staff role rejected (400)', r.status === 400 && r.data.code === 'validation', JSON.stringify(r.data));
   r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { method: 'POST', jar: sup, body: {
-    name: `E2E Therapist ${UNIQUE}`, role: 'Massage therapist',
-    phone: '+44 20 7946 0102', email: `therapist.${UNIQUE}@example.com` } });
+    name: `E2E Therapist ${UNIQUE}`, role: 'therapist',
+    phone: '+44 20 7946 0102', email: `therapist.${UNIQUE}@example.com`,
+    monthlySalary: 4200, incentivePercent: 10, workFeePercent: 15, posLogin: true } });
   ok('staff member created (201)', r.status === 201, JSON.stringify(r.data));
   const staffId = r.data.id;
   r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { jar: sup });
   ok('staff list contains new member', r.data.items.some((m) => m.id === staffId));
-  r = await req(`/api/supplier/staff/${staffId}`, { method: 'PATCH', jar: sup, body: { role: 'Senior therapist', active: false } });
+  const createdMember = r.data.items.find((m) => m.id === staffId);
+  ok('therapist compensation stored (salary + incentive + job fee)',
+    createdMember?.monthly_salary === 4200 && createdMember?.incentive_percent === 10 && createdMember?.work_fee_percent === 15,
+    JSON.stringify(createdMember));
+  ok('POS login refused for therapist role', !createdMember?.pos_login, JSON.stringify({ pos_login: createdMember?.pos_login }));
+  r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { method: 'POST', jar: sup, body: {
+    name: `E2E Cashier ${UNIQUE}`, role: 'cashier', monthlySalary: 1800, workFeePercent: 25, posLogin: true } });
+  ok('cashier created (201)', r.status === 201, JSON.stringify(r.data));
+  const cashierId = r.data.id;
+  r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { jar: sup });
+  const cashier = r.data.items.find((m) => m.id === cashierId);
+  ok('cashier gets POS login; job fee not stored for non-therapists',
+    !!cashier?.pos_login && cashier?.work_fee_percent == null && cashier?.monthly_salary === 1800,
+    JSON.stringify(cashier));
+  r = await req(`/api/supplier/staff/${cashierId}`, { method: 'PATCH', jar: sup, body: { role: 'regular' } });
+  ok('staff role downgrade accepted', r.status === 200, JSON.stringify(r.data));
+  r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { jar: sup });
+  const downgraded = r.data.items.find((m) => m.id === cashierId);
+  ok('POS access revoked when role leaves admin/cashier', !downgraded?.pos_login,
+    JSON.stringify({ pos_login: downgraded?.pos_login }));
+  r = await req(`/api/supplier/staff/${staffId}`, { method: 'PATCH', jar: sup, body: {
+    role: 'therapist', active: false, monthlySalary: 4500, incentivePercent: 12, workFeePercent: 15 } });
   ok('staff member updated', r.status === 200, JSON.stringify(r.data));
   r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { jar: sup });
   const updatedMember = r.data.items.find((m) => m.id === staffId);
-  ok('staff update persisted (role + hidden)', updatedMember?.role === 'Senior therapist' && !updatedMember.active,
+  ok('staff update persisted (compensation + hidden)',
+    updatedMember?.monthly_salary === 4500 && updatedMember?.incentive_percent === 12 && !updatedMember.active,
     JSON.stringify(updatedMember));
   r = await req('/api/supplier/spas/spa_does_not_exist/staff', { jar: sup });
   ok('staff on unknown spa -> 404', r.status === 404, `status=${r.status}`);
   r = await req(`/api/supplier/staff/${staffId}`, { method: 'DELETE', jar: sup });
   ok('staff member removed', r.status === 200, JSON.stringify(r.data));
+  r = await req(`/api/supplier/staff/${cashierId}`, { method: 'DELETE', jar: sup });
+  ok('second member removed (cleanup)', r.status === 200, JSON.stringify(r.data));
   r = await req(`/api/supplier/spas/${tabSpaId}/staff`, { jar: sup });
   ok('removed member gone', !r.data.items.some((m) => m.id === staffId));
 

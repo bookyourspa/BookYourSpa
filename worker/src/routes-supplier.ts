@@ -341,7 +341,7 @@ supplierRoutes.get('/spas/:id/staff', async (c) => {
   const user = approvedSupplier(c);
   const spa = await ownSpa(c, user, c.req.param('id'));
   const rows = await c.env.DB
-    .prepare('SELECT id, name, role, phone, email, active, created_at FROM staff WHERE spa_id = ? ORDER BY active DESC, name')
+    .prepare('SELECT * FROM staff WHERE spa_id = ? ORDER BY active DESC, name')
     .bind(spa.id)
     .all();
   return c.json({ items: rows.results });
@@ -353,15 +353,23 @@ supplierRoutes.post('/spas/:id/staff', async (c) => {
   const body = await c.req.json().catch(() => null);
   const v = validate(body, {
     name: { required: true, min: 2, max: 80 },
-    role: { max: 40 },
+    role: { required: true, enum: ['admin', 'cashier', 'therapist', 'regular'] },
     phone: { max: 40 },
     email: { type: 'email', max: 120 },
     active: { type: 'boolean' },
+    monthlySalary: { type: 'number', min: 0, max: 1000000 },
+    incentivePercent: { type: 'number', min: 0, max: 100 },
+    workFeePercent: { type: 'number', min: 0, max: 100 },
+    posLogin: { type: 'boolean' },
   });
   const id = newId('stf');
   await c.env.DB
-    .prepare('INSERT INTO staff (id, spa_id, name, role, phone, email, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(id, spa.id, v.name, v.role || 'Therapist', v.phone || null, v.email || null, v.active === false ? 0 : 1, nowIso())
+    .prepare(`INSERT INTO staff (id, spa_id, name, role, phone, email, active, monthly_salary, incentive_percent,
+              work_fee_percent, pos_login, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, spa.id, v.name, v.role, v.phone || null, v.email || null, v.active === false ? 0 : 1,
+      v.monthlySalary ?? null, v.incentivePercent ?? null,
+      v.role === 'therapist' ? v.workFeePercent ?? null : null,
+      ['admin', 'cashier'].includes(v.role) && v.posLogin === true ? 1 : 0, nowIso())
     .run();
   return c.json({ id }, 201);
 });
@@ -373,18 +381,32 @@ supplierRoutes.patch('/staff/:id', async (c) => {
   await ownSpa(c, user, row.spa_id);
   const body = await c.req.json().catch(() => null);
   const v = validate(body, {
-    name: { min: 2, max: 80 }, role: { max: 40 }, phone: { max: 40 },
+    name: { min: 2, max: 80 }, role: { enum: ['admin', 'cashier', 'therapist', 'regular'] }, phone: { max: 40 },
     email: { type: 'email', max: 120 }, active: { type: 'boolean' },
+    monthlySalary: { type: 'number', min: 0, max: 1000000 },
+    incentivePercent: { type: 'number', min: 0, max: 100 },
+    workFeePercent: { type: 'number', min: 0, max: 100 },
+    posLogin: { type: 'boolean' },
   });
   // validate() maps blank values to undefined; read the raw body so an
-  // explicitly-blank phone/email clears the stored value instead of keeping it.
+  // explicitly-blank phone/email/salary clears the stored value instead of keeping it.
   const raw = (body ?? {}) as Record<string, unknown>;
   const optStr = (key: string, fallback: string | null) =>
     key in raw ? String(raw[key] ?? '').trim() || null : fallback;
+  const optNum = (key: string, fallback: number | null) =>
+    key in raw ? (v[key] ?? null) : fallback;
+  const role = v.role ?? row.role;
+  // Work/job fee belongs to therapists only; POS login belongs to admin/cashier only.
+  const workFee = role === 'therapist' ? optNum('workFeePercent', row.work_fee_percent) : null;
+  const posLogin = ['admin', 'cashier'].includes(role) &&
+    (v.posLogin === undefined ? !!row.pos_login : v.posLogin) ? 1 : 0;
   await c.env.DB
-    .prepare('UPDATE staff SET name = ?, role = ?, phone = ?, email = ?, active = ? WHERE id = ?')
-    .bind(v.name ?? row.name, v.role ?? row.role, optStr('phone', row.phone), optStr('email', row.email),
-      v.active === undefined ? row.active : v.active ? 1 : 0, row.id)
+    .prepare(`UPDATE staff SET name = ?, role = ?, phone = ?, email = ?, active = ?,
+              monthly_salary = ?, incentive_percent = ?, work_fee_percent = ?, pos_login = ? WHERE id = ?`)
+    .bind(v.name ?? row.name, role, optStr('phone', row.phone), optStr('email', row.email),
+      v.active === undefined ? row.active : v.active ? 1 : 0,
+      optNum('monthlySalary', row.monthly_salary), optNum('incentivePercent', row.incentive_percent),
+      workFee, posLogin, row.id)
     .run();
   return c.json({ ok: true });
 });
