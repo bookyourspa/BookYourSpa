@@ -188,10 +188,14 @@ CREATE TABLE IF NOT EXISTS staff (
   id TEXT PRIMARY KEY,
   spa_id TEXT NOT NULL REFERENCES spas(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'Therapist',
+  role TEXT NOT NULL DEFAULT 'therapist',
   phone TEXT,
   email TEXT,
   active INTEGER NOT NULL DEFAULT 1,
+  monthly_salary REAL,
+  incentive_percent REAL,
+  work_fee_percent REAL,
+  pos_login INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 

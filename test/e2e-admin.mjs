@@ -100,7 +100,7 @@ async function req(path, { method = 'GET', body, jar: j, csrf = true, origin, he
 
   // Listing deletion must also clean up its scoped staff rows and listing promos,
   // and the listing must vanish from the supplier's own list.
-  r = await req(`/api/supplier/spas/${newSpaId}/staff`, { method: 'POST', jar: ced, body: { name: 'Cascade Tester', role: 'Therapist' } });
+  r = await req(`/api/supplier/spas/${newSpaId}/staff`, { method: 'POST', jar: ced, body: { name: 'Cascade Tester', role: 'therapist' } });
   ok('staff created on fresh listing', r.status === 201, JSON.stringify(r.data));
   const cascadeStaffId = r.data.id;
   r = await req(`/api/supplier/spas/${newSpaId}/offers`, { method: 'POST', jar: ced, body: {

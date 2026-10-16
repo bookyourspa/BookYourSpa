@@ -128,6 +128,26 @@ try {
   await waitFor(() => text().includes('Add member'), 'staff panel');
   assert(text().includes('No team members yet') || /team members?/.test(text()), 'Staff tab → StaffPanel (empty state on fresh seed)');
 
+  // role selector + conditional pay/POS fields
+  click(byText('+ Add member'));
+  await waitFor(() => text().includes('Add team member'), 'staff add modal');
+  const roleSelect = [...doc.querySelectorAll('select')].find((s) => [...s.options].some((o) => o.value === 'regular'));
+  assert(!!roleSelect && ['admin', 'cashier', 'therapist', 'regular'].every((v) => [...roleSelect.options].some((o) => o.value === v)),
+    'role selector offers Admin / Cashier / Therapist / Regular');
+  assert(text().includes('Monthly salary') && text().includes('Incentive / services %'), 'pay fields present (salary + incentive)');
+  assert(text().includes('Work / job fee %'), 'therapist (default) shows the work/job fee field');
+  assert(!text().includes('Spa POS login access'), 'Spa POS access hidden for therapist');
+  const setRole = (v) => { roleSelect.value = v; roleSelect.dispatchEvent(new window.Event('change', { bubbles: true })); };
+  setRole('cashier');
+  await waitFor(() => text().includes('Spa POS login access'), 'Spa POS access appears for cashier');
+  assert(!text().includes('Work / job fee %'), 'work/job fee hidden for cashier');
+  setRole('regular');
+  await waitFor(() => !text().includes('Spa POS login access'), 'Spa POS access hidden for regular');
+  assert(!text().includes('Work / job fee %'), 'work/job fee hidden for regular');
+  const cancelBtn = [...doc.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Cancel');
+  if (cancelBtn) click(cancelBtn);
+  await waitFor(() => !text().includes('Add team member'), 'staff modal closed');
+
   click(strip.found[3]);
   await waitFor(() => text().includes('New promotion'), 'promotions panel');
   assert(text().includes('No promotions yet') || /promotions?/.test(text()), 'Promotion tab → PromotionsPanel');
