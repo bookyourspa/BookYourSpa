@@ -29,6 +29,8 @@ const shapeBooking = (r: any, cancellationHours: number) => {
 
 const BOOKING_SELECT = `b.*, s.name AS spa_name, s.slug AS spa_slug, s.city AS spa_city, s.image AS spa_image, s.address AS spa_address`;
 
+const parseJson = <T>(v: unknown, fallback: T): T => { try { return JSON.parse(String(v)) as T; } catch { return fallback; } };
+
 /* ---------- create booking ---------- */
 
 bookingRoutes.post('/bookings', async (c) => {
@@ -40,6 +42,7 @@ bookingRoutes.post('/bookings', async (c) => {
     itemSlug: { required: true, max: 80 },
     date: { required: true, type: 'date' },
     time: { required: true, type: 'time' },
+    durationMin: { type: 'int', min: 15, max: 480 },
     notes: { max: 500 },
     guestName: { max: 80 },
     guestPhone: { max: 40 },
@@ -55,12 +58,20 @@ bookingRoutes.post('/bookings', async (c) => {
 
   const table = v.itemType === 'package' ? 'packages' : 'treatments';
   const item = await c.env.DB
-    .prepare(`SELECT slug, name, duration_min, price FROM ${table} WHERE spa_id = ? AND slug = ? AND active = 1`)
+    .prepare(`SELECT slug, name, duration_min, durations, price FROM ${table} WHERE spa_id = ? AND slug = ? AND active = 1`)
     .bind(spa.id, v.itemSlug)
     .first<any>();
   if (!item) throw new ApiError(404, 'Treatment or package not found', 'not_found');
 
-  const slots = await getSlots(c.env.DB, spa.id, v.date, item.duration_min);
+  // Treatments can offer several duration options; the guest's pick drives the
+  // slot length, the end time and the price charged.
+  const options = parseJson<number[]>(item.durations, []).filter((d: number) => Number(d) > 0);
+  if (v.durationMin && options.length && !options.includes(v.durationMin)) {
+    throw new ApiError(400, 'That duration is not offered for this treatment', 'validation');
+  }
+  const durationMin = v.durationMin && options.includes(v.durationMin) ? v.durationMin : (options[0] ?? item.duration_min);
+
+  const slots = await getSlots(c.env.DB, spa.id, v.date, durationMin);
   const slot = slots.find((s) => s.time === v.time);
   if (!slot || !slot.available) {
     throw new ApiError(409, 'That time has just been taken. Please choose another slot.', 'slot_unavailable');
@@ -81,7 +92,7 @@ bookingRoutes.post('/bookings', async (c) => {
   const base = money(Number(item.price));
   const { discount, total } = priceAfterPromo(base, promo);
   const commission = calcCommission(total, num(settings.commission_percent, 15));
-  const endMins = parseTime(v.time) + item.duration_min;
+  const endMins = parseTime(v.time) + durationMin;
 
   let code = bookingCode();
   for (let i = 0; i < 5; i++) {
@@ -96,7 +107,7 @@ bookingRoutes.post('/bookings', async (c) => {
         booking_date, start_time, end_time, amount, discount, total, commission, supplier_earning, currency,
         status, payment_status, promo_code, guest_name, guest_phone, notes, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'unpaid', ?, ?, ?, ?, ?, ?)`)
-    .bind(id, code, user.id, spa.id, v.itemType, item.slug, item.name, item.duration_min,
+    .bind(id, code, user.id, spa.id, v.itemType, item.slug, item.name, durationMin,
       v.date, v.time, fmtTime(endMins), base, discount, total, commission, money(total - commission),
       settings.currency ?? 'USD', v.promoCode ? v.promoCode.toUpperCase() : null,
       v.guestName ?? null, v.guestPhone ?? null, v.notes ?? null, now, now)

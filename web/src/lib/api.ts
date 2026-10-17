@@ -54,6 +54,8 @@ export type Spa = {
   address: string; summary: string; description: string[]; image: string; gallery: string[];
   facilities: string[]; categories: string[]; priceLevel: number; rating: number;
   reviewCount: number; featured: boolean; lat: number | null; lng: number | null;
+  phone?: string; website?: string; mapsUrl?: string;
+  spaCategories?: string[]; spaTypes?: string[]; genre?: string; doorstep?: boolean;
   hours: { open: string; close: string; closed: boolean }[]; status: string;
   minPrice: number | null; maxPrice: number | null;
 };

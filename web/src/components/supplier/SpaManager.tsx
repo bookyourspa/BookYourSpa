@@ -5,9 +5,13 @@ import { api, ApiError } from '@/lib/api';
 import { money, durationLabel, cn } from '@/lib/format';
 import { EmptyState, Field, Modal, Spinner, useToast } from '@/components/ui';
 import { CATEGORIES, DESTINATIONS } from '@/lib/content';
+import { SPA_CATEGORY_OPTIONS, SPA_TYPE_OPTIONS, GENRE_OPTIONS, DELIVERY_OPTIONS, labelOf } from '@/lib/taxonomy';
 import { fileToDataUrl } from '@/lib/images';
+import { RichText } from '@/components/RichText';
 import { BookingsPanel } from './BookingsPanel';
 import { StaffPanel, PromotionsPanel, ReviewsPanel } from './ListingPanels';
+
+const MAPS_URL_RE = /^https:\/\/(www\.|maps\.)?google\.[a-z.]+\/maps\/(place|search)\//i;
 
 const IMAGE_CHOICES = [
   '/images/spa/aurora-lounge.jpg', '/images/spa/serenity-pool.jpg', '/images/spa/orchid-stones.jpg',
@@ -19,6 +23,13 @@ const IMAGE_CHOICES = [
 const emptySpa = {
   name: '', destination: 'london', city: '', country: '', address: '', summary: '',
   image: IMAGE_CHOICES[0], gallery: [] as string[], facilities: '', categories: ['massage'], priceLevel: 3,
+  phone: '', website: '', mapsUrl: '', mapsLink: '',
+  spaCategories: [] as string[], spaTypes: [] as string[], genre: 'both', doorstep: false,
+};
+
+const parseJsonArr = (v: unknown): string[] => {
+  if (Array.isArray(v)) return v.map(String);
+  try { const p = JSON.parse(String(v ?? '[]')); return Array.isArray(p) ? p.map(String) : []; } catch { return []; }
 };
 
 const isImageUrl = (s: string) => /^(https?:\/\/|\/)\S{2,299}$/.test(String(s ?? ''));
@@ -32,6 +43,7 @@ export function SpaManager({ spaId, mode = 'list', onChanged }: { spaId?: string
   const [form, setForm] = useState<any>(emptySpa);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [galleryLink, setGalleryLink] = useState('');
 
   const load = useCallback(async () => {
@@ -51,7 +63,37 @@ export function SpaManager({ spaId, mode = 'list', onChanged }: { spaId?: string
       name: s.name, destination: s.destination, city: s.city, country: s.country, address: s.address,
       summary: s.summary, image: s.image, gallery: s.gallery ?? [], facilities: (s.facilities || []).join(', '),
       categories: s.categories?.length ? s.categories : ['massage'], priceLevel: s.priceLevel,
+      phone: s.phone ?? '', website: s.website ?? '', mapsUrl: s.mapsUrl ?? '', mapsLink: s.mapsUrl ?? '',
+      spaCategories: s.spaCategories ?? [], spaTypes: s.spaTypes ?? [], genre: s.genre ?? 'both', doorstep: !!s.doorstep,
     });
+  };
+
+  /* Paste a Google Maps place link → the worker recovers name, pin, phone,
+     website and address server-side (no CORS) and we fill whatever is empty. */
+  const importFromMaps = async () => {
+    const url = form.mapsLink?.trim() ?? '';
+    if (!MAPS_URL_RE.test(url)) {
+      toast.show('Paste a Google Maps place link — the …/maps/place/… URL from “Share”', 'error');
+      return;
+    }
+    setImporting(true);
+    try {
+      const d = await api<any>('/api/supplier/places/import', { method: 'POST', body: { url } });
+      setForm((f: any) => ({
+        ...f,
+        name: f.name.trim() ? f.name : (d.name ?? f.name),
+        address: f.address.trim().length >= 5 ? f.address : (d.address ?? f.address),
+        phone: f.phone.trim() ? f.phone : (d.phone ?? ''),
+        website: f.website.trim() ? f.website : (d.website ?? ''),
+        mapsUrl: d.mapsUrl ?? url,
+        lat: d.lat ?? f.lat, lng: d.lng ?? f.lng,
+      }));
+      const got = ['name', 'address', 'phone', 'website'].filter((k) => d[k]);
+      const miss = d.missing?.length ? ` — add ${d.missing.join(', ')} by hand` : '';
+      toast.show(`Imported from Google Maps: ${got.join(', ')}${miss}`, 'success');
+    } catch (e) {
+      toast.show(e instanceof ApiError ? e.message : 'Import failed — paste the link again', 'error');
+    } finally { setImporting(false); }
   };
 
   const save = async () => {
@@ -61,12 +103,22 @@ export function SpaManager({ spaId, mode = 'list', onChanged }: { spaId?: string
     if (!isImageUrl(form.image)) {
       toast.show('Cover image must be a link (https://… or /images/…)', 'error'); return;
     }
+    if (form.website && !/^https?:\/\//i.test(form.website)) {
+      toast.show('Website must start with https://', 'error'); return;
+    }
     setBusy(true);
     const body = {
       ...form,
       facilities: String(form.facilities).split(',').map((f: string) => f.trim()).filter(Boolean),
       gallery: (form.gallery ?? []).filter(Boolean).slice(0, 12),
       priceLevel: Number(form.priceLevel),
+      phone: String(form.phone ?? '').trim(),
+      website: String(form.website ?? '').trim(),
+      mapsUrl: String(form.mapsUrl ?? form.mapsLink ?? '').trim(),
+      spaCategories: form.spaCategories ?? [],
+      spaTypes: form.spaTypes ?? [],
+      genre: form.genre ?? 'both',
+      doorstep: !!form.doorstep,
     };
     try {
       if (editing === 'new') {
@@ -138,6 +190,17 @@ export function SpaManager({ spaId, mode = 'list', onChanged }: { spaId?: string
       <Modal open={!!editing} onClose={() => setEditing(null)} title={editing === 'new' ? 'New listing' : 'Edit listing'} wide>
         <div className="space-y-4">
           <Field label="Spa name"><input value={form.name} onChange={(e) => setForm((f: any) => ({ ...f, name: e.target.value }))} className="input-lux" /></Field>
+
+          <Field label="Google Maps link" hint="Paste your place's …/maps/place/… URL — we'll pull the name, map pin, phone and website from it automatically">
+            <div className="flex gap-2">
+              <input value={form.mapsLink ?? ''} onChange={(e) => setForm((f: any) => ({ ...f, mapsLink: e.target.value }))}
+                placeholder="https://www.google.com/maps/place/…" className="input-lux" inputMode="url" />
+              <button type="button" onClick={importFromMaps} disabled={importing}
+                className="btn-outline !px-4 !py-2 text-xs whitespace-nowrap disabled:opacity-50">
+                {importing ? 'Importing…' : 'Import from Maps'}
+              </button>
+            </div>
+          </Field>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Destination">
               <select value={form.destination} onChange={(e) => setForm((f: any) => ({ ...f, destination: e.target.value }))} className="input-lux">
@@ -153,6 +216,50 @@ export function SpaManager({ spaId, mode = 'list', onChanged }: { spaId?: string
           <Field label="Summary" hint="Shown on cards and search results (10–300 characters)">
             <textarea value={form.summary} onChange={(e) => setForm((f: any) => ({ ...f, summary: e.target.value }))} rows={2} maxLength={300} className="input-lux" />
           </Field>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Phone"><input value={form.phone ?? ''} onChange={(e) => setForm((f: any) => ({ ...f, phone: e.target.value }))}
+              maxLength={40} placeholder="+62 818 0467 7778" className="input-lux" /></Field>
+            <Field label="Website"><input value={form.website ?? ''} onChange={(e) => setForm((f: any) => ({ ...f, website: e.target.value }))}
+              maxLength={300} placeholder="https://…" className="input-lux" inputMode="url" /></Field>
+            <Field label="Genre type" hint="Who the house serves">
+              <select value={form.genre ?? 'both'} onChange={(e) => setForm((f: any) => ({ ...f, genre: e.target.value }))} className="input-lux">
+                {GENRE_OPTIONS.map((g) => <option key={g.slug} value={g.slug}>{g.name}</option>)}
+              </select>
+            </Field>
+          </div>
+          <Field label="Spa category" hint="How your listing is classified — pick up to 6">
+            <div className="flex flex-wrap gap-2">
+              {SPA_CATEGORY_OPTIONS.map((c) => {
+                const on = (form.spaCategories ?? []).includes(c.slug);
+                return (
+                  <button key={c.slug} type="button"
+                    onClick={() => setForm((f: any) => ({ ...f, spaCategories: on ? f.spaCategories.filter((x: string) => x !== c.slug) : [...(f.spaCategories ?? []), c.slug] }))}
+                    className={cn('badge border px-3 py-1', on ? 'border-gold bg-gold/15 text-[#8a6d2f]' : 'border-ink/15 text-stone')}>
+                    {c.name}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+          <Field label="Spa type" hint="The treatments and rituals you offer — pick up to 14">
+            <div className="flex flex-wrap gap-2">
+              {SPA_TYPE_OPTIONS.map((t) => {
+                const on = (form.spaTypes ?? []).includes(t.slug);
+                return (
+                  <button key={t.slug} type="button"
+                    onClick={() => setForm((f: any) => ({ ...f, spaTypes: on ? f.spaTypes.filter((x: string) => x !== t.slug) : [...(f.spaTypes ?? []), t.slug] }))}
+                    className={cn('badge border px-3 py-1', on ? 'border-gold bg-gold/15 text-[#8a6d2f]' : 'border-ink/15 text-stone')}>
+                    {t.name}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+          <label className="flex w-fit cursor-pointer items-center gap-2.5 rounded-xl border border-ink/10 px-3.5 py-2.5 text-sm">
+            <input type="checkbox" checked={!!form.doorstep} onChange={(e) => setForm((f: any) => ({ ...f, doorstep: e.target.checked }))}
+              className="h-4 w-4 accent-[#c8a96a]" />
+            <span>Accept <strong>Massage on Call / Doorstep Spa</strong> — therapists travel to the guest</span>
+          </label>
           <Field label="Facilities" hint="Comma separated">
             <input value={form.facilities} onChange={(e) => setForm((f: any) => ({ ...f, facilities: e.target.value }))} className="input-lux" placeholder="Sauna, Steam room, Couples suite" />
           </Field>
@@ -309,8 +416,18 @@ function ListingCard({ s, onEdit, onRemove, onChanged }: { s: any; onEdit: () =>
 
 type Catalog = { treatments: any[]; packages: any[]; hours: any[]; blocked: any[] };
 const DAYS_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const EMPTY_TREATMENT = { name: '', category: 'massage', durationMin: 60, price: 100, description: '', image: '/images/treatment/signature-massage.jpg', active: true };
-const EMPTY_PACKAGE = { name: '', description: '', includes: '', durationMin: 120, price: 250, image: '/images/package/retreat-day.jpg', active: true };
+const EMPTY_TREATMENT = {
+  name: '', category: 'massage', durationMin: 60, durations: [60] as number[], price: 100,
+  descriptionHtml: '', spaType: 'massages', genre: 'both', delivery: 'both',
+  image: '/images/treatment/signature-massage.jpg', active: true,
+};
+const EMPTY_PACKAGE = {
+  name: '', description: '', includes: '', durationMin: 120, price: 250,
+  spaTypes: [] as string[], genre: 'both', delivery: 'both',
+  image: '/images/package/retreat-day.jpg', active: true,
+};
+
+const MIN_DURATION = 15, MAX_DURATION = 480, MAX_DURATION_OPTIONS = 8;
 
 function CatalogManager({ spaId, only }: { spaId: string; only?: 'treatments' }) {
   const toast = useToast();
@@ -337,10 +454,21 @@ function CatalogManager({ spaId, only }: { spaId: string; only?: 'treatments' })
 
   const saveTreatment = async () => {
     if (tForm.name.trim().length < 3) { toast.show('Give the treatment a name', 'error'); return; }
-    if (Number(tForm.price) <= 0 || Number(tForm.durationMin) < 15) { toast.show('Price must be positive and duration at least 15 minutes', 'error'); return; }
+    const durations: number[] = [...new Set<number>((tForm.durations ?? []).map((d: any) => Math.round(Number(d))))]
+      .filter((d) => Number.isFinite(d) && d >= MIN_DURATION && d <= MAX_DURATION)
+      .sort((a, b) => a - b)
+      .slice(0, MAX_DURATION_OPTIONS);
+    if (!durations.length) { toast.show(`Add at least one duration option (${MIN_DURATION}–${MAX_DURATION} min)`, 'error'); return; }
+    if (Number(tForm.price) <= 0) { toast.show('Price must be positive', 'error'); return; }
     setBusy(true);
     try {
-      const body = { ...tForm, price: Number(tForm.price), durationMin: Number(tForm.durationMin), description: tForm.description || tForm.name };
+      const body = {
+        name: tForm.name, price: Number(tForm.price), durations, durationMin: durations[0],
+        descriptionHtml: tForm.descriptionHtml ?? '',
+        description: String(tForm.descriptionHtml ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000) || tForm.name,
+        spaType: tForm.spaType, genre: tForm.genre, delivery: tForm.delivery,
+        image: tForm.image, active: tForm.active,
+      };
       if (editingT && editingT !== 'new') await api(`/api/supplier/treatments/${editingT.id}`, { method: 'PATCH', body });
       else await api(`/api/supplier/spas/${spaId}/treatments`, { method: 'POST', body });
       setEditingT(null); setTForm(EMPTY_TREATMENT); toast.show('Treatment saved'); await load();
@@ -361,6 +489,7 @@ function CatalogManager({ spaId, only }: { spaId: string; only?: 'treatments' })
       const body = {
         ...pForm, price: Number(pForm.price), durationMin: Number(pForm.durationMin),
         includes: String(pForm.includes).split(',').map((s: string) => s.trim()).filter(Boolean),
+        spaTypes: pForm.spaTypes ?? [], genre: pForm.genre ?? 'both', delivery: pForm.delivery ?? 'both',
       };
       if (editingP) await api(`/api/supplier/packages/${editingP.id}`, { method: 'PATCH', body });
       else await api(`/api/supplier/spas/${spaId}/packages`, { method: 'POST', body });
@@ -421,18 +550,25 @@ function CatalogManager({ spaId, only }: { spaId: string; only?: 'treatments' })
           </div>
           <div className="card-lux overflow-x-auto">
             <table className="table-lux">
-              <thead><tr><th>Treatment</th><th>Category</th><th>Duration</th><th>Price</th><th>Active</th><th></th></tr></thead>
+              <thead><tr><th>Treatment</th><th>Type</th><th>Duration</th><th>Price</th><th>Active</th><th></th></tr></thead>
               <tbody>
                 {data.treatments.map((t) => (
                   <tr key={t.id}>
-                    <td className="max-w-[260px]"><span className="block truncate font-medium">{t.name}</span><span className="block max-w-[260px] truncate text-xs text-stone">{t.description}</span></td>
-                    <td className="text-xs capitalize">{t.category}</td>
-                    <td className="text-xs">{durationLabel(t.duration_min)}</td>
+                    <td className="max-w-[260px]"><span className="block truncate font-medium">{t.name}</span><span className="block max-w-[260px] truncate text-xs text-stone">{String(t.description ?? '').replace(/<[^>]*>/g, ' ').slice(0, 90)}</span></td>
+                    <td className="text-xs capitalize">{labelOf(SPA_TYPE_OPTIONS, t.spa_type, t.category)}</td>
+                    <td className="text-xs">{(parseJsonArr(t.durations).length ? parseJsonArr(t.durations) : [t.duration_min]).map(durationLabel).join(' · ') || durationLabel(t.duration_min)}</td>
                     <td>{money(t.price)}</td>
                     <td><span className={cn('badge', t.active ? 'bg-sage/20 text-moss' : 'bg-stone/15 text-stone')}>{t.active ? 'live' : 'hidden'}</span></td>
                     <td>
                       <div className="flex gap-1">
-                        <button onClick={() => { setEditingT(t); setTForm({ name: t.name, category: t.category, durationMin: t.duration_min, price: t.price, description: t.description, image: t.image, active: !!t.active }); }}
+                        <button onClick={() => { setEditingT(t); setTForm({
+                          name: t.name, category: t.category, durationMin: t.duration_min,
+                          durations: parseJsonArr(t.durations).map(Number).filter((n) => n > 0).length
+                            ? parseJsonArr(t.durations).map(Number) : [t.duration_min],
+                          price: t.price, descriptionHtml: t.description_html ?? '',
+                          spaType: t.spa_type || 'massages', genre: t.genre || 'both', delivery: t.delivery || 'both',
+                          image: t.image, active: !!t.active,
+                        }); }}
                           className="badge border border-ink/15 text-stone hover:bg-ink/5">Edit</button>
                         <button onClick={() => removeTreatment(t)} className="badge border border-red-900/30 text-stone hover:bg-red-900/5">Remove</button>
                       </div>
@@ -444,22 +580,58 @@ function CatalogManager({ spaId, only }: { spaId: string; only?: 'treatments' })
             </table>
           </div>
 
-          <Modal open={!!editingT} onClose={() => { setEditingT(null); setTForm(EMPTY_TREATMENT); }} title={editingT !== 'new' ? 'Edit treatment' : 'Add treatment'}>
+          <Modal open={!!editingT} onClose={() => { setEditingT(null); setTForm(EMPTY_TREATMENT); }} title={editingT !== 'new' ? 'Edit treatment' : 'Add treatment'} wide>
             <div className="space-y-4">
               <Field label="Name"><input value={tForm.name} onChange={(e) => setTForm((f: any) => ({ ...f, name: e.target.value }))} className="input-lux" /></Field>
-              <div className="grid grid-cols-2 gap-4">
-                <Field label="Category">
-                  <select value={tForm.category} onChange={(e) => setTForm((f: any) => ({ ...f, category: e.target.value }))} className="input-lux">
-                    {CATEGORIES.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
-                  </select>
-                </Field>
-                <Field label="Duration (min)"><input type="number" min={15} step={15} value={tForm.durationMin} onChange={(e) => setTForm((f: any) => ({ ...f, durationMin: e.target.value }))} className="input-lux" /></Field>
-              </div>
+              <Field label="Description" hint="Rich text — bold, headings, lists and links all render on your public page">
+                <RichText value={tForm.descriptionHtml ?? ''} onChange={(html) => setTForm((f: any) => ({ ...f, descriptionHtml: html }))}
+                  label="Treatment description" />
+              </Field>
+              <Field label={`Duration options — ${tForm.durations?.length ?? 0} of ${MAX_DURATION_OPTIONS}`}
+                hint="Guests pick one when booking; the first is the default">
+                <div className="space-y-2">
+                  {(tForm.durations ?? []).map((d: number, i: number) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <input type="number" min={MIN_DURATION} max={MAX_DURATION} step={5} value={d}
+                        onChange={(e) => setTForm((f: any) => ({ ...f, durations: f.durations.map((x: number, j: number) => (j === i ? Number(e.target.value) : x)) }))}
+                        className="input-lux !w-28" aria-label={`Duration option ${i + 1} in minutes`} />
+                      <span className="text-xs text-stone">minutes</span>
+                      {(tForm.durations?.length ?? 0) > 1 && (
+                        <button type="button"
+                          onClick={() => setTForm((f: any) => ({ ...f, durations: f.durations.filter((_: number, j: number) => j !== i) }))}
+                          className="ml-auto text-xs text-red-900/70 hover:underline">Remove</button>
+                      )}
+                      {i === 0 && <span className="badge bg-gold/15 text-[#8a6d2f]">default</span>}
+                    </div>
+                  ))}
+                  {(tForm.durations?.length ?? 0) < MAX_DURATION_OPTIONS && (
+                    <button type="button"
+                      onClick={() => setTForm((f: any) => ({ ...f, durations: [...(f.durations ?? []), (f.durations?.[f.durations.length - 1] ?? 60) + 30] }))}
+                      className="btn-outline !px-3 !py-1.5 text-xs">+ Add duration option</button>
+                  )}
+                </div>
+              </Field>
               <div className="grid grid-cols-2 gap-4">
                 <Field label="Price"><input type="number" min={1} value={tForm.price} onChange={(e) => setTForm((f: any) => ({ ...f, price: e.target.value }))} className="input-lux" /></Field>
-                <Field label="Visible"><select value={tForm.active ? '1' : '0'} onChange={(e) => setTForm((f: any) => ({ ...f, active: e.target.value === '1' }))} className="input-lux"><option value="1">Yes</option><option value="0">No</option></select></Field>
+                <Field label="Spa type">
+                  <select value={tForm.spaType ?? 'massages'} onChange={(e) => setTForm((f: any) => ({ ...f, spaType: e.target.value }))} className="input-lux">
+                    {SPA_TYPE_OPTIONS.map((t) => <option key={t.slug} value={t.slug}>{t.name}</option>)}
+                  </select>
+                </Field>
               </div>
-              <Field label="Description"><textarea rows={3} value={tForm.description} onChange={(e) => setTForm((f: any) => ({ ...f, description: e.target.value }))} className="input-lux" /></Field>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Genre type">
+                  <select value={tForm.genre ?? 'both'} onChange={(e) => setTForm((f: any) => ({ ...f, genre: e.target.value }))} className="input-lux">
+                    {GENRE_OPTIONS.map((g) => <option key={g.slug} value={g.slug}>{g.name}</option>)}
+                  </select>
+                </Field>
+                <Field label="Delivery type" hint="Where this treatment happens">
+                  <select value={tForm.delivery ?? 'both'} onChange={(e) => setTForm((f: any) => ({ ...f, delivery: e.target.value }))} className="input-lux">
+                    {DELIVERY_OPTIONS.map((d) => <option key={d.slug} value={d.slug}>{d.name}</option>)}
+                  </select>
+                </Field>
+              </div>
+              <Field label="Visible"><select value={tForm.active ? '1' : '0'} onChange={(e) => setTForm((f: any) => ({ ...f, active: e.target.value === '1' }))} className="input-lux"><option value="1">Yes</option><option value="0">No</option></select></Field>
               <div className="flex gap-2">
                 <button onClick={saveTreatment} disabled={busy} className="btn-ink !px-6 !py-2.5 text-xs">{busy ? 'Saving…' : 'Save treatment'}</button>
                 <button onClick={() => { setEditingT(null); setTForm(EMPTY_TREATMENT); }} className="btn-outline !px-5 !py-2.5 text-xs">Cancel</button>
@@ -483,7 +655,13 @@ function CatalogManager({ spaId, only }: { spaId: string; only?: 'treatments' })
                     <p className="text-xs text-stone">{durationLabel(p.duration_min)} · {money(p.price)} · {p.active ? 'live' : 'hidden'}</p>
                   </div>
                   <div className="flex gap-1">
-                    <button onClick={() => { setEditingP(p.id); setPForm({ name: p.name, description: p.description, includes: (JSON.parse(p.includes || '[]') as string[]).join(', '), durationMin: p.duration_min, price: p.price, image: p.image, active: !!p.active }); }}
+                    <button onClick={() => { setEditingP(p.id); setPForm({
+                      name: p.name, description: p.description,
+                      includes: (JSON.parse(p.includes || '[]') as string[]).join(', '),
+                      durationMin: p.duration_min, price: p.price,
+                      spaTypes: parseJsonArr(p.spa_types), genre: p.genre || 'both', delivery: p.delivery || 'both',
+                      image: p.image, active: !!p.active,
+                    }); }}
                       className="badge border border-ink/15 text-stone hover:bg-ink/5">Edit</button>
                     <button onClick={() => removePackage(p)} className="badge border border-red-900/30 text-stone hover:bg-red-900/5">Remove</button>
                   </div>
@@ -497,7 +675,7 @@ function CatalogManager({ spaId, only }: { spaId: string; only?: 'treatments' })
             {data.packages.length === 0 && <EmptyState title="No packages yet" body="Bundle treatments into half-day or full-day experiences." />}
           </div>
 
-          <Modal open={!!editingP} onClose={() => setEditingP(null)} title={editingP === 'new' ? 'Add package' : 'Edit package'}>
+          <Modal open={!!editingP} onClose={() => setEditingP(null)} title={editingP === 'new' ? 'Add package' : 'Edit package'} wide>
             <div className="space-y-4">
               <Field label="Name"><input value={pForm.name} onChange={(e) => setPForm((f: any) => ({ ...f, name: e.target.value }))} className="input-lux" /></Field>
               <Field label="Description"><textarea rows={2} value={pForm.description} onChange={(e) => setPForm((f: any) => ({ ...f, description: e.target.value }))} className="input-lux" /></Field>
@@ -505,6 +683,32 @@ function CatalogManager({ spaId, only }: { spaId: string; only?: 'treatments' })
               <div className="grid grid-cols-2 gap-4">
                 <Field label="Duration (min)"><input type="number" min={30} step={15} value={pForm.durationMin} onChange={(e) => setPForm((f: any) => ({ ...f, durationMin: e.target.value }))} className="input-lux" /></Field>
                 <Field label="Price"><input type="number" min={1} value={pForm.price} onChange={(e) => setPForm((f: any) => ({ ...f, price: e.target.value }))} className="input-lux" /></Field>
+              </div>
+              <Field label="Spa types" hint="Which spa styles this package covers — pick any">
+                <div className="flex flex-wrap gap-2">
+                  {SPA_TYPE_OPTIONS.map((t) => {
+                    const on = (pForm.spaTypes ?? []).includes(t.slug);
+                    return (
+                      <button key={t.slug} type="button"
+                        onClick={() => setPForm((f: any) => ({ ...f, spaTypes: on ? f.spaTypes.filter((x: string) => x !== t.slug) : [...(f.spaTypes ?? []), t.slug] }))}
+                        className={cn('badge border px-3 py-1', on ? 'border-gold bg-gold/15 text-[#8a6d2f]' : 'border-ink/15 text-stone')}>
+                        {t.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </Field>
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Genre type">
+                  <select value={pForm.genre ?? 'both'} onChange={(e) => setPForm((f: any) => ({ ...f, genre: e.target.value }))} className="input-lux">
+                    {GENRE_OPTIONS.map((g) => <option key={g.slug} value={g.slug}>{g.name}</option>)}
+                  </select>
+                </Field>
+                <Field label="Delivery type">
+                  <select value={pForm.delivery ?? 'both'} onChange={(e) => setPForm((f: any) => ({ ...f, delivery: e.target.value }))} className="input-lux">
+                    {DELIVERY_OPTIONS.map((d) => <option key={d.slug} value={d.slug}>{d.name}</option>)}
+                  </select>
+                </Field>
               </div>
               <div className="flex gap-2">
                 <button onClick={savePackage} disabled={busy} className="btn-ink !px-6 !py-2.5 text-xs">{busy ? 'Saving…' : 'Save package'}</button>

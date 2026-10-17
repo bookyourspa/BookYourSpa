@@ -6,6 +6,7 @@ import { money, durationLabel, initials } from '@/lib/format';
 import { Spinner, Stars } from '@/components/ui';
 import { BookingWidget } from '@/components/BookingWidget';
 import { DAYS, SITE } from '@/lib/content';
+import { GENRE_OPTIONS, DELIVERY_OPTIONS, labelOf } from '@/lib/taxonomy';
 
 /* Listings created after the static export was built have no prerendered HTML
    at /spas/<slug>/. The worker serves THIS route's exported shell at that URL
@@ -85,7 +86,9 @@ export default function SpaFallbackPage() {
 
   const { spa, treatments, packages, reviews } = data;
   const items = treatments.map((t: any) => ({
-    slug: t.slug, name: t.name, durationMin: t.duration ?? t.duration_min, price: t.price,
+    slug: t.slug, name: t.name, durationMin: t.duration ?? t.duration_min,
+    durations: Array.isArray(t.durations) ? t.durations.filter((d: number) => Number(d) > 0) : undefined,
+    price: t.price,
   }));
   const pkgItems = packages.map((p: any) => ({
     slug: p.slug, name: p.name, durationMin: p.duration ?? p.duration_min, price: p.price,
@@ -113,7 +116,20 @@ export default function SpaFallbackPage() {
             </span>
             <span>{spa.city}, {spa.country}</span>
             <span className="text-gold-soft">{'$'.repeat(Number(spa.priceLevel) || 3)}</span>
+            {(spa.genre && spa.genre !== 'both') && <span className="badge bg-champagne/15 text-champagne">{labelOf(GENRE_OPTIONS, spa.genre, spa.genre)}</span>}
+            {spa.doorstep && <span className="badge bg-champagne/15 text-champagne">Doorstep spa</span>}
           </p>
+          {(spa.phone || spa.website || spa.mapsUrl) && (
+            <p className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-champagne/70">
+              {spa.phone && <span>{esc(spa.phone)}</span>}
+              {spa.website && (
+                <a href={esc(spa.website)} target="_blank" rel="noopener noreferrer nofollow" className="underline decoration-gold/60 underline-offset-4 hover:text-gold">Website</a>
+              )}
+              {spa.mapsUrl && (
+                <a href={esc(spa.mapsUrl)} target="_blank" rel="noopener noreferrer nofollow" className="underline decoration-gold/60 underline-offset-4 hover:text-gold">View on Google Maps</a>
+              )}
+            </p>
+          )}
         </div>
       </section>
 
@@ -169,18 +185,28 @@ function renderSections(d: Loaded): string {
       <p class="eyebrow">Treatments</p>
       <h2 class="mt-3 font-display text-4xl">Menu &amp; prices</h2>
       <ul class="mt-6 divide-y divide-ink/8 border-y border-ink/8">
-        ${treatments.map((t: any) => `
+        ${treatments.map((t: any) => {
+          const opts = (Array.isArray(t.durations) ? t.durations : []).filter((d: number) => Number(d) > 0);
+          const durLabel = opts.length > 1
+            ? opts.map((d: number) => durationLabel(d)).join(' · ')
+            : durationLabel(t.duration ?? t.duration_min);
+          const meta = [durLabel, t.category,
+            t.delivery && t.delivery !== 'both' ? labelOf(DELIVERY_OPTIONS, t.delivery, t.delivery) : '',
+            t.genre && t.genre !== 'both' ? labelOf(GENRE_OPTIONS, t.genre, t.genre) : '']
+            .filter(Boolean).map((s: string) => esc(s)).join(' · ');
+          return `
           <li class="flex items-start justify-between gap-6 py-5">
             <div>
               <h3 class="font-display text-2xl">${esc(t.name)}</h3>
               <p class="mt-1 max-w-xl text-sm text-stone">${esc(t.description)}</p>
-              <p class="mt-2 text-xs uppercase tracking-[0.18em] text-stone">${esc(durationLabel(t.duration ?? t.duration_min))} · ${esc(t.category)}</p>
+              <p class="mt-2 text-xs uppercase tracking-[0.18em] text-stone">${meta}</p>
             </div>
             <div class="whitespace-nowrap pt-1 text-right">
               <p class="font-display text-2xl text-moss">${esc(money(t.price))}</p>
               <a href="#book" class="text-xs uppercase tracking-[0.16em] text-gold hover:underline">Book →</a>
             </div>
-          </li>`).join('')}
+          </li>`;
+        }).join('')}
       </ul>
     </div>` : '';
 

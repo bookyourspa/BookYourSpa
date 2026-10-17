@@ -6,7 +6,7 @@ import { useAuth } from '@/lib/auth';
 import { money, addDays, durationLabel, cn } from '@/lib/format';
 import { Field, Spinner, useToast } from './ui';
 
-type Item = { slug: string; name: string; durationMin?: number; duration?: number; price: number };
+type Item = { slug: string; name: string; durationMin?: number; duration?: number; durations?: number[]; price: number };
 type Props = {
   spaSlug: string;
   treatments: Item[];
@@ -22,6 +22,7 @@ export function BookingWidget({ spaSlug, treatments, packages, initialDate }: Pr
   const [itemType, setItemType] = useState<'treatment' | 'package'>('treatment');
   const list: Item[] = itemType === 'treatment' ? treatments : packages;
   const [itemSlug, setItemSlug] = useState(list[0]?.slug ?? '');
+  const [durationMin, setDurationMin] = useState<number | null>(null);
   const [date, setDate] = useState(initialDate && initialDate >= addDays(1) ? initialDate : addDays(5));
   const [avail, setAvail] = useState<Availability | null>(null);
   const [loadingAvail, setLoadingAvail] = useState(true);
@@ -37,13 +38,22 @@ export function BookingWidget({ spaSlug, treatments, packages, initialDate }: Pr
   const item = useMemo(() => list.find((i) => i.slug === itemSlug) ?? list[0], [list, itemSlug]);
   const price = item?.price ?? 0;
 
+  // Duration options: reset the pick whenever the selected item changes.
+  const options = useMemo(() => {
+    const ds = (item?.durations ?? []).filter((d) => Number(d) > 0);
+    return ds.length ? ds : [item?.durationMin ?? item?.duration ?? 60];
+  }, [item]);
+  useEffect(() => { setDurationMin(null); }, [itemSlug, itemType]);
+  const chosenDuration = durationMin && options.includes(durationMin) ? durationMin : options[0];
+
   const loadAvailability = useCallback(async () => {
     if (!item) return;
     setLoadingAvail(true);
     setTime('');
     try {
       const data = await api<Availability>(
-        `/api/availability?spa=${encodeURIComponent(spaSlug)}&date=${date}&itemType=${itemType}&itemSlug=${encodeURIComponent(item.slug)}`
+        `/api/availability?spa=${encodeURIComponent(spaSlug)}&date=${date}&itemType=${itemType}` +
+        `&itemSlug=${encodeURIComponent(item.slug)}&durationMin=${chosenDuration}`
       );
       setAvail(data);
     } catch (e) {
@@ -52,7 +62,7 @@ export function BookingWidget({ spaSlug, treatments, packages, initialDate }: Pr
     } finally {
       setLoadingAvail(false);
     }
-  }, [spaSlug, date, itemType, item]);
+  }, [spaSlug, date, itemType, item, chosenDuration]);
 
   useEffect(() => { void loadAvailability(); }, [loadAvailability]);
 
@@ -64,6 +74,7 @@ export function BookingWidget({ spaSlug, treatments, packages, initialDate }: Pr
         method: 'POST',
         body: {
           spaSlug, itemType, itemSlug: item!.slug, date, time,
+          durationMin: chosenDuration,
           notes: notes || undefined, guestName: guestName || undefined,
           promoCode: promo || undefined,
         },
@@ -141,6 +152,23 @@ export function BookingWidget({ spaSlug, treatments, packages, initialDate }: Pr
             ))}
           </select>
         </Field>
+
+        {options.length > 1 && (
+          <div>
+            <span className="label-lux">Duration</span>
+            <div className="mt-1.5 flex flex-wrap gap-2" role="radiogroup" aria-label="Duration options">
+              {options.map((d) => (
+                <button key={d} type="button" role="radio" aria-checked={chosenDuration === d}
+                  onClick={() => setDurationMin(d)}
+                  className={cn('rounded-full border px-4 py-1.5 text-sm transition-colors',
+                    chosenDuration === d ? 'border-gold bg-gold/15 font-medium text-[#8a6d2f]'
+                      : 'border-ink/15 text-stone hover:border-gold/60 hover:text-ink')}>
+                  {durationLabel(d)}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <Field label="Date">
           <input type="date" value={date} min={addDays(1)} max={addDays(120)} onChange={(e) => setDate(e.target.value)} className="input-lux" />

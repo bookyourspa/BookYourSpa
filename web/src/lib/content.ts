@@ -16,6 +16,10 @@ export type Category = {
 export type Treatment = {
   slug: string; name: string; category: string; duration: number;
   price: number; image: string; blurb: string; description: string;
+  /** Multiple duration options (minutes); falls back to [duration]. */
+  durations?: number[];
+  /** Fine-grained spa style, genre and delivery — optional, supplier-set. */
+  spaType?: string; genre?: string; delivery?: string;
 };
 
 export type SpaPackage = {
@@ -34,6 +38,10 @@ export type Spa = {
   hours: { open: string; close: string; closed: boolean }[]; // index 0 = Monday
   treatments: { slug: string; price: number }[];
   packages: { slug: string; price: number }[];
+  /** Contact + taxonomy — optional, supplier-set (Google Maps import fills the first three). */
+  phone?: string; website?: string; mapsUrl?: string;
+  spaCategories?: string[]; spaTypes?: string[];
+  genre?: string; doorstep?: boolean;
 };
 
 export type Offer = {

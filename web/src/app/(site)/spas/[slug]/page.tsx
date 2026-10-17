@@ -5,6 +5,7 @@ import { SPAS, SITE, REVIEWS, getSpa, getDestination, spaTreatments, spaPackages
 import { BookingWidget } from '@/components/BookingWidget';
 import { JsonLd, Stars } from '@/components/ui';
 import { money, durationLabel, initials } from '@/lib/format';
+import { GENRE_OPTIONS, DELIVERY_OPTIONS, labelOf } from '@/lib/taxonomy';
 import { api } from '@/lib/api';
 
 export const dynamicParams = false;
@@ -109,7 +110,24 @@ export default async function SpaDetailPage({ params }: { params: Promise<{ slug
             <span className="flex items-center gap-2"><Stars rating={spa.rating} /> {spa.rating.toFixed(1)} · {spa.reviewCount} reviews</span>
             <span>{spa.city}, {spa.country}</span>
             <span className="text-gold-soft">{'$'.repeat(spa.priceLevel)}</span>
+            {(spa.genre && spa.genre !== 'both') && <span className="badge bg-champagne/15 text-champagne">{labelOf(GENRE_OPTIONS, spa.genre, spa.genre)}</span>}
+            {spa.doorstep && <span className="badge bg-champagne/15 text-champagne">Doorstep spa</span>}
           </p>
+          {((spa.phone ?? '') || (spa.website ?? '') || (spa.mapsUrl ?? '')) && (
+            <p className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-champagne/70">
+              {spa.phone && <span>{spa.phone}</span>}
+              {spa.website && (
+                <a href={spa.website} target="_blank" rel="noopener noreferrer nofollow" className="underline decoration-gold/60 underline-offset-4 hover:text-gold">
+                  Website
+                </a>
+              )}
+              {spa.mapsUrl && (
+                <a href={spa.mapsUrl} target="_blank" rel="noopener noreferrer nofollow" className="underline decoration-gold/60 underline-offset-4 hover:text-gold">
+                  View on Google Maps
+                </a>
+              )}
+            </p>
+          )}
         </div>
       </section>
 
@@ -121,6 +139,14 @@ export default async function SpaDetailPage({ params }: { params: Promise<{ slug
             <div className="mt-5 space-y-4 text-[0.98rem] leading-relaxed text-stone">
               {spa.description.map((p) => <p key={p.slice(0, 24)}>{p}</p>)}
             </div>
+            {(spa.spaTypes?.length ?? 0) > 0 && (
+              <div className="mt-5 flex flex-wrap items-center gap-2">
+                <span className="text-[0.68rem] uppercase tracking-[0.2em] text-stone">Spa style</span>
+                {spa.spaTypes!.map((t) => (
+                  <span key={t} className="badge border border-ink/15 text-stone">{t.replace(/-/g, ' ')}</span>
+                ))}
+              </div>
+            )}
           </div>
 
           {spa.gallery.length > 0 && (
@@ -149,7 +175,14 @@ export default async function SpaDetailPage({ params }: { params: Promise<{ slug
                   <div>
                     <h3 className="font-display text-2xl">{t.name}</h3>
                     <p className="mt-1 max-w-xl text-sm text-stone">{t.description}</p>
-                    <p className="mt-2 text-xs uppercase tracking-[0.18em] text-stone">{durationLabel(t.duration)} · {t.category}</p>
+                    <p className="mt-2 text-xs uppercase tracking-[0.18em] text-stone">
+                      {(t.durations?.length ?? 0) > 1
+                        ? t.durations!.map(durationLabel).join(' · ')
+                        : durationLabel(t.duration)}
+                      {' · '}{t.category}
+                      {t.delivery && t.delivery !== 'both' && ` · ${labelOf(DELIVERY_OPTIONS, t.delivery, t.delivery)}`}
+                      {t.genre && t.genre !== 'both' && ` · ${labelOf(GENRE_OPTIONS, t.genre, t.genre)}`}
+                    </p>
                   </div>
                   <div className="whitespace-nowrap pt-1 text-right">
                     <p className="font-display text-2xl text-moss">{money(t.price)}</p>
@@ -229,7 +262,7 @@ export default async function SpaDetailPage({ params }: { params: Promise<{ slug
         <aside id="book" className="lg:sticky lg:top-28 lg:self-start">
           <BookingWidget
             spaSlug={spa.slug}
-            treatments={treatments.map((t) => ({ slug: t.slug, name: t.name, durationMin: t.duration, price: t.price }))}
+            treatments={treatments.map((t) => ({ slug: t.slug, name: t.name, durationMin: t.duration, durations: t.durations, price: t.price }))}
             packages={packages.map((p) => ({ slug: p.slug, name: p.name, durationMin: p.duration, price: p.price }))}
           />
           <p className="mt-4 text-center text-xs text-stone">

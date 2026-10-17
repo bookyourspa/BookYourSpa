@@ -393,6 +393,128 @@ const futureDate = (daysAhead) => {
   ok('global offers count unchanged by listing-promo lifecycle',
     (await req('/api/offers')).data.items.length === globalBefore || true);
 
+  console.log('— Google Maps import + listing taxonomy —');
+  r = await req('/api/supplier/places/import', { method: 'POST', jar: sup, body: { url: 'https://example.com/maps/place/Nope' } });
+  ok('non-Google URL rejected (400)', r.status === 400 && r.data.code === 'invalid_maps_url', JSON.stringify(r.data).slice(0, 120));
+
+  const MAPS_URL = 'https://www.google.com/maps/place/Bali+Orchid+Spa/@-8.7216701,115.1872068,17z/data=!4m9!3m8!1s0x2dd2414d4312737b:0x38aa1b1af04e2591!5m2!4m1!1i2!8m2!3d-8.7216701!4d115.1897817!16s%2Fg%2F1td2qpls';
+  r = await req('/api/supplier/places/import', { method: 'POST', jar: sup, body: { url: MAPS_URL } });
+  const imp = r.data ?? {};
+  ok('maps import returns 200', r.status === 200, `status=${r.status} ${JSON.stringify(imp).slice(0, 160)}`);
+  ok('maps import: name parsed from the place URL', imp.name === 'Bali Orchid Spa', `name=${imp.name}`);
+  ok('maps import: exact pin parsed from !3d/!4d',
+    Math.abs((imp.lat ?? 0) + 8.7216701) < 1e-6 && Math.abs((imp.lng ?? 0) - 115.1897817) < 1e-6,
+    `lat=${imp.lat} lng=${imp.lng}`);
+  ok('maps import: phone recovered from the place payload', /^\+62/.test(imp.phone ?? ''), `phone=${imp.phone}`);
+  ok('maps import: website recovered (baliorchidspa.com)', /baliorchidspa\.com/.test(imp.website ?? ''), `website=${imp.website}`);
+  ok('maps import: street address recovered', /Jl\. Bypass Ngurah Rai/.test(imp.address ?? ''), `address=${imp.address}`);
+  ok('maps import: mapsUrl kept for the public page', imp.mapsUrl === MAPS_URL);
+
+  const taxSpa = {
+    name: `Taxonomy Flow ${UNIQUE}`, destination: 'bali', city: 'Denpasar', country: 'Indonesia',
+    address: 'Jl. Bypass Ngurah Rai No.108, Pemogan',
+    summary: 'A listing exercising the v5 taxonomy, contact and import fields.',
+    phone: imp.phone, website: imp.website, mapsUrl: imp.mapsUrl,
+    lat: imp.lat, lng: imp.lng,
+    spaCategories: ['day-spa', 'massage-on-call', 'not-a-real-category'],
+    spaTypes: ['massages', 'hammam-bath-ritual', 'bogus-type'],
+    genre: 'women', doorstep: true,
+  };
+  r = await req('/api/supplier/spas', { method: 'POST', jar: sup, body: taxSpa });
+  ok('taxonomy listing created (201)', r.status === 201, JSON.stringify(r.data).slice(0, 160));
+  const taxId = r.data.id, taxSlug = r.data.slug;
+
+  r = await req('/api/supplier/spas', { jar: sup });
+  const taxRow = r.data.items.find((s) => s.id === taxId);
+  ok('supplier list carries contact + mapsUrl',
+    taxRow?.phone === imp.phone && taxRow?.website === imp.website && taxRow?.mapsUrl === MAPS_URL,
+    JSON.stringify({ phone: taxRow?.phone, website: taxRow?.website }));
+  ok('invalid taxonomy members filtered out',
+    JSON.stringify(taxRow?.spaCategories) === JSON.stringify(['day-spa', 'massage-on-call'])
+      && JSON.stringify(taxRow?.spaTypes) === JSON.stringify(['massages', 'hammam-bath-ritual']),
+    JSON.stringify({ spaCategories: taxRow?.spaCategories, spaTypes: taxRow?.spaTypes }));
+  ok('genre + doorstep stored', taxRow?.genre === 'women' && taxRow?.doorstep === true,
+    JSON.stringify({ genre: taxRow?.genre, doorstep: taxRow?.doorstep }));
+
+  // Partial PATCH (no taxonomy keys) must not wipe stored values.
+  r = await req(`/api/supplier/spas/${taxId}`, { method: 'PATCH', jar: sup, body: { summary: 'Summary rewritten by the partial update test.' } });
+  ok('partial PATCH accepted (200)', r.status === 200, JSON.stringify(r.data));
+  r = await req('/api/supplier/spas', { jar: sup });
+  const taxRow2 = r.data.items.find((s) => s.id === taxId);
+  ok('partial PATCH keeps taxonomy + contact intact',
+    taxRow2?.genre === 'women' && taxRow2?.doorstep === true
+      && taxRow2?.spaTypes?.length === 2 && taxRow2?.phone === imp.phone,
+    JSON.stringify({ genre: taxRow2?.genre, spaTypes: taxRow2?.spaTypes }));
+
+  console.log('— Treatments: rich text, duration options, delivery —');
+  r = await req(`/api/supplier/spas/${taxId}/treatments`, { method: 'POST', jar: sup, body: {
+    name: `Ocean Ritual ${UNIQUE}`, price: 120, durations: [30, 60],
+    spaType: 'massages', genre: 'women', delivery: 'doorstep',
+    descriptionHtml: '<p>Deep <b>flow</b> with warm oil.</p><script>alert(1)</script><img src=x onerror=alert(2)><a href="javascript:alert(3)">bad</a>',
+  } });
+  ok('treatment with durations + taxonomy created (201)', r.status === 201, JSON.stringify(r.data).slice(0, 160));
+  const trtId = r.data.id, trtSlug = r.data.slug;
+
+  r = await req(`/api/supplier/spas/${taxId}/catalog`, { jar: sup });
+  const trt = r.data.treatments.find((t) => t.id === trtId);
+  ok('duration options stored + sorted, first is canonical',
+    trt?.durations === '[30,60]' && trt?.duration_min === 30, `durations=${trt?.durations} duration_min=${trt?.duration_min}`);
+  ok('treatment taxonomy stored', trt?.spa_type === 'massages' && trt?.genre === 'women' && trt?.delivery === 'doorstep',
+    JSON.stringify({ spa_type: trt?.spa_type, genre: trt?.genre, delivery: trt?.delivery }));
+  ok('rich text sanitised on write',
+    /<b>flow<\/b>/.test(trt?.description_html ?? '')
+      && !/<script/i.test(trt?.description_html ?? '')
+      && !/onerror/i.test(trt?.description_html ?? '')
+      && !/javascript:/i.test(trt?.description_html ?? ''),
+    String(trt?.description_html).slice(0, 160));
+  ok('plain-text shadow derived from the HTML', /Deep flow with warm oil/.test(trt?.description ?? ''),
+    String(trt?.description).slice(0, 100));
+
+  // Approve so the public detail must carry everything.
+  r = await req(`/api/admin/spas/${taxId}`, { method: 'PATCH', jar: resetJar, body: { status: 'approved' } });
+  ok('taxonomy listing approved', r.status === 200);
+  r = await req(`/api/spas/${taxSlug}`);
+  const pubSpa = r.data.spa, pubTrt = (r.data.treatments ?? []).find((t) => t.slug === trtSlug);
+  ok('public spa carries contact/genre/doorstep/taxonomy',
+    r.status === 200 && pubSpa?.phone === imp.phone && pubSpa?.genre === 'women' && pubSpa?.doorstep === true
+      && (pubSpa?.spaTypes ?? []).includes('hammam-bath-ritual'),
+    JSON.stringify({ phone: pubSpa?.phone, genre: pubSpa?.genre, doorstep: pubSpa?.doorstep, spaTypes: pubSpa?.spaTypes }));
+  ok('public treatment carries durations + delivery + sanitised HTML',
+    JSON.stringify(pubTrt?.durations) === JSON.stringify([30, 60]) && pubTrt?.delivery === 'doorstep'
+      && /<b>flow<\/b>/.test(pubTrt?.descriptionHtml ?? '') && !/<script/i.test(pubTrt?.descriptionHtml ?? ''),
+    JSON.stringify({ durations: pubTrt?.durations, delivery: pubTrt?.delivery }));
+
+  console.log('— Booking honours the chosen duration option —');
+  const tdate = futureDate(7);
+  r = await req(`/api/availability?spa=${taxSlug}&date=${tdate}&itemType=treatment&itemSlug=${trtSlug}&durationMin=60`);
+  ok('availability uses the requested duration', r.status === 200 && r.data.durationMin === 60
+    && JSON.stringify(r.data.durations) === JSON.stringify([30, 60]),
+    JSON.stringify({ durationMin: r.data.durationMin, durations: r.data.durations }).slice(0, 120));
+  const tFree = r.data.slots.find((s) => s.available);
+  ok('has a free slot for the 60-minute option', !!tFree);
+
+  r = await req(`/api/availability?spa=${taxSlug}&date=${tdate}&itemType=treatment&itemSlug=${trtSlug}&durationMin=45`);
+  ok('unknown duration option ignored (falls back to first)', r.status === 200 && r.data.durationMin === 30,
+    `durationMin=${r.data.durationMin}`);
+
+  r = await req('/api/bookings', { method: 'POST', jar: cust, body: {
+    spaSlug: taxSlug, itemType: 'treatment', itemSlug: trtSlug, date: tdate, time: tFree.time, durationMin: 60 } });
+  ok('booking with 60-minute option created (201)', r.status === 201, JSON.stringify(r.data).slice(0, 200));
+  const tCode = r.data.booking?.code;
+  const endH = Number(tFree.time.slice(0, 2)), endM = Number(tFree.time.slice(3, 5)) + 60;
+  const expEnd = `${String(endH + Math.floor(endM / 60)).padStart(2, '0')}:${String(endM % 60).padStart(2, '0')}`;
+  ok('booking end time = start + 60 min', r.data.booking?.endTime === expEnd,
+    `end=${r.data.booking?.endTime} expected=${expEnd}`);
+
+  r = await req('/api/bookings', { method: 'POST', jar: cust, body: {
+    spaSlug: taxSlug, itemType: 'treatment', itemSlug: trtSlug, date: tdate, time: tFree.time, durationMin: 45 } });
+  ok('booking with an unoffered duration -> 400', r.status === 400, `status=${r.status}`);
+
+  // Cleanup: cancel the future booking, then the listing (listings with upcoming bookings refuse deletion).
+  await req(`/api/bookings/${tCode}/cancel`, { method: 'POST', jar: cust, body: { reason: 'test cleanup' } });
+  r = await req(`/api/supplier/spas/${taxId}`, { method: 'DELETE', jar: sup });
+  ok('taxonomy-test listing removed (cleanup)', r.status === 200, JSON.stringify(r.data));
+
   console.log('— Cancellation —');
   r = await req(`/api/bookings/${code}/cancel`, { method: 'POST', jar: cust, body: { reason: 'Change of plans' } });
   ok('customer cancels (refund)', r.status === 200 && r.data.refunded === true, JSON.stringify(r.data));

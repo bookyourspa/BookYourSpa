@@ -1,9 +1,13 @@
 import { Hono, type Context } from 'hono';
 import type { AppEnv } from './types';
 import { ApiError, validate, newId, nowIso, money, randomToken, rateLimit } from './util';
+import type { FieldSpec } from './util';
 import { requireRole, ownsSupplier, type SessionUser } from './auth';
 import { getSettings, num } from './db';
 import { sendEmail, emailLayout, h, notify } from './email';
+import { importGooglePlace } from './places';
+import { sanitizeRichHtml, richTextToPlain } from './richtext';
+import { SPA_CATEGORIES, SPA_TYPES, GENRES, DELIVERY_TYPES, legacyCategoryFor, onlyValid } from './taxonomy';
 
 export const supplierRoutes = new Hono<AppEnv>();
 
@@ -26,6 +30,24 @@ const slugify = (s: string) =>
     .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'item';
 
 const parse = <T>(v: unknown, fb: T): T => { try { return JSON.parse(String(v)) as T; } catch { return fb; } };
+
+/**
+ * Duration options arrive as [60, 90, 120] — whole minutes, 15–480, sorted,
+ * deduplicated. The first entry becomes the canonical duration_min (slots,
+ * bookings, legacy clients); the rest are alternatives the guest may pick.
+ */
+const normalizeDurations = (raw: unknown, fallback?: number): number[] => {
+  const out: number[] = [];
+  if (Array.isArray(raw)) {
+    for (const d of raw) {
+      const n = Math.round(Number(d));
+      if (Number.isFinite(n) && n >= 15 && n <= 480 && !out.includes(n)) out.push(n);
+      if (out.length >= 8) break;
+    }
+  }
+  if (!out.length && fallback != null && Number.isFinite(Number(fallback))) out.push(Math.round(Number(fallback)));
+  return out.sort((a, b) => a - b);
+};
 
 supplierRoutes.get('/status', (c) => {
   const user = c.var.user;
@@ -94,6 +116,21 @@ supplierRoutes.get('/overview', async (c) => {
 
 /* ---------- spa listings ---------- */
 
+/* ---------- Google Maps place import ---------- */
+
+// Paste a /maps/place/… link → recover name, pin, phone, website and address.
+// The fetch is server-side (no CORS), best-effort, and never blocks the save:
+// whatever Google won't give us the supplier types in by hand.
+supplierRoutes.post('/places/import', async (c) => {
+  const user = approvedSupplier(c);
+  void user;
+  const rl = await rateLimit(c.env.DB, 'places-import', c.var.ip, 20, 60_000);
+  if (!rl.ok) throw new ApiError(429, `Too many imports — retry in ${rl.retryAfterSec}s`, 'rate_limited');
+  const body = await c.req.json().catch(() => null);
+  const details = await importGooglePlace(String(body?.url ?? ''));
+  return c.json(details);
+});
+
 supplierRoutes.get('/spas', async (c) => {
   const user = approvedSupplier(c);
   const rows = await c.env.DB
@@ -114,6 +151,9 @@ supplierRoutes.get('/spas', async (c) => {
       categories: parse<string[]>(r.categories, []), priceLevel: r.price_level, rating: r.rating,
       reviewCount: r.review_count, featured: !!r.featured, status: r.status, hours: parse<any[]>(r.hours, []),
       lat: r.lat, lng: r.lng,
+      phone: r.phone ?? '', email: r.email ?? '', website: r.website ?? '', mapsUrl: r.maps_url ?? '',
+      spaCategories: parse<string[]>(r.spa_categories, []), spaTypes: parse<string[]>(r.spa_types, []),
+      genre: r.genre ?? 'both', doorstep: !!r.doorstep,
       counts: { treatments: Number(counts[0].results[0]?.c ?? 0), packages: Number(counts[1].results[0]?.c ?? 0), upcoming: Number(counts[2].results[0]?.c ?? 0) },
     });
   }
@@ -135,6 +175,41 @@ const spaBodySpec = {
   priceLevel: { type: 'int' as const, min: 1, max: 5 },
   lat: { type: 'number' as const },
   lng: { type: 'number' as const },
+  // contact + taxonomy (Google Maps import fills phone/website/mapsUrl)
+  phone: { max: 40 },
+  email: { type: 'email' as const },
+  website: { max: 300 },
+  mapsUrl: { max: 500 },
+  spaCategories: { type: 'array' as const, max: 6 },
+  spaTypes: { type: 'array' as const, max: 14 },
+  genre: { enum: [...GENRES] },
+  doorstep: { type: 'boolean' as const },
+};
+
+/** PATCH accepts any subset of the POST fields — same shape, nothing required. */
+const spaPatchSpec: Record<string, FieldSpec> = Object.fromEntries(
+  Object.entries(spaBodySpec).map(([k, s]) => [k, { ...s, required: false }]),
+);
+
+/** Normalises the new listing fields: valid enum members only, URL-shaped links only.
+    Array fields absent from the payload keep their stored value (partial update). */
+const spaTaxonomyPatch = (v: Record<string, any>, spa?: any) => {
+  const website = String(v.website ?? '').trim();
+  const mapsUrl = String(v.mapsUrl ?? '').trim();
+  return {
+    phone: String(v.phone ?? '').trim().slice(0, 40),
+    email: v.email ? String(v.email).toLowerCase().trim().slice(0, 254) : (spa?.email ?? ''),
+    website: /^https?:\/\//i.test(website) ? website.slice(0, 300) : (spa?.website ?? ''),
+    mapsUrl: /^https:\/\/([a-z0-9-]+\.)?google\.[a-z]{2,}/i.test(mapsUrl) ? mapsUrl.slice(0, 500) : (spa?.maps_url ?? ''),
+    spaCategories: v.spaCategories !== undefined
+      ? onlyValid(v.spaCategories, SPA_CATEGORIES, 6)
+      : parse<string[]>(spa?.spa_categories, []),
+    spaTypes: v.spaTypes !== undefined
+      ? onlyValid(v.spaTypes, SPA_TYPES, 14)
+      : parse<string[]>(spa?.spa_types, []),
+    genre: GENRES.includes(v.genre) ? v.genre : (spa?.genre ?? 'both'),
+    doorstep: v.doorstep === undefined ? (spa ? !!spa.doorstep : false) : !!v.doorstep,
+  };
 };
 
 supplierRoutes.post('/spas', async (c) => {
@@ -145,15 +220,19 @@ supplierRoutes.post('/spas', async (c) => {
   let slug = base;
   for (let i = 1; await c.env.DB.prepare('SELECT 1 AS x FROM spas WHERE slug = ?').bind(slug).first(); i++) slug = `${base}-${i}`;
 
+  const tax = spaTaxonomyPatch(v);
   const id = `spa_${randomToken(10)}`;
   const hours = JSON.stringify(Array.from({ length: 7 }, (_, d) => ({ open: '09:00', close: '20:00', closed: d === 6 })));
   await c.env.DB
-    .prepare(`INSERT INTO spas (id, supplier_id, slug, name, destination, city, country, address, summary, description, image, gallery, facilities, categories, price_level, rating, review_count, featured, lat, lng, hours, status, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, 'pending', ?, ?)`)
+    .prepare(`INSERT INTO spas (id, supplier_id, slug, name, destination, city, country, address, summary, description, image, gallery, facilities, categories, price_level, rating, review_count, featured, lat, lng, hours, phone, email, website, maps_url, spa_categories, spa_types, genre, doorstep, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`)
     .bind(id, user.supplier_id, slug, v.name, v.destination, v.city, v.country, v.address, v.summary,
       JSON.stringify(v.description?.length ? v.description : [v.summary]), v.image ?? '/images/spa/aurora-lounge.jpg',
       JSON.stringify(v.gallery ?? []), JSON.stringify(v.facilities ?? []), JSON.stringify(v.categories ?? ['massage']),
-      v.priceLevel ?? 3, v.lat ?? null, v.lng ?? null, hours, nowIso(), nowIso())
+      v.priceLevel ?? 3, v.lat ?? null, v.lng ?? null, hours,
+      tax.phone, tax.email, tax.website, tax.mapsUrl,
+      JSON.stringify(tax.spaCategories), JSON.stringify(tax.spaTypes), tax.genre, tax.doorstep ? 1 : 0,
+      nowIso(), nowIso())
     .run();
 
   // default weekly hours + a starter treatment so the listing is bookable after approval
@@ -178,18 +257,30 @@ supplierRoutes.patch('/spas/:id', async (c) => {
   const user = approvedSupplier(c);
   const spa = await ownSpa(c, user, c.req.param('id'));
   const body = await c.req.json().catch(() => null);
-  const v = validate(body, spaBodySpec);
+  const v = validate(body, spaPatchSpec);
+  // validate() substitutes [] for absent array fields — restore "absent" so a
+  // partial payload keeps the stored values instead of wiping them.
+  for (const key of ['gallery', 'facilities', 'categories', 'description', 'spaCategories', 'spaTypes']) {
+    if (!Array.isArray((body as Record<string, unknown>)?.[key])) delete v[key];
+  }
   const cover = v.image ?? spa.image;
   const gallery = (v.gallery ?? parse<string[]>(spa.gallery, [])).filter(Boolean);
+  const tax = spaTaxonomyPatch(v, spa);
   await c.env.DB
     .prepare(`UPDATE spas SET name = ?, destination = ?, city = ?, country = ?, address = ?, summary = ?, image = ?,
-              gallery = ?, facilities = ?, categories = ?, description = ?, price_level = ?, lat = ?, lng = ?, updated_at = ? WHERE id = ?`)
-    .bind(v.name, v.destination, v.city, v.country, v.address, v.summary, cover,
+              gallery = ?, facilities = ?, categories = ?, description = ?, price_level = ?, lat = ?, lng = ?,
+              phone = ?, email = ?, website = ?, maps_url = ?, spa_categories = ?, spa_types = ?, genre = ?, doorstep = ?,
+              updated_at = ? WHERE id = ?`)
+    .bind(v.name ?? spa.name, v.destination ?? spa.destination, v.city ?? spa.city,
+      v.country ?? spa.country, v.address ?? spa.address, v.summary ?? spa.summary, cover,
       JSON.stringify(gallery),
       JSON.stringify(v.facilities ?? parse<string[]>(spa.facilities, [])),
       JSON.stringify(v.categories ?? parse<string[]>(spa.categories, [])),
       JSON.stringify(v.description ?? parse<string[]>(spa.description, [])),
-      v.priceLevel ?? spa.price_level, v.lat ?? spa.lat, v.lng ?? spa.lng, nowIso(), spa.id)
+      v.priceLevel ?? spa.price_level, v.lat ?? spa.lat, v.lng ?? spa.lng,
+      tax.phone || spa.phone || '', tax.email, tax.website, tax.mapsUrl,
+      JSON.stringify(tax.spaCategories), JSON.stringify(tax.spaTypes), tax.genre, tax.doorstep ? 1 : 0,
+      nowIso(), spa.id)
     .run();
 
   // Uploaded images this save no longer references (old cover or removed
@@ -289,20 +380,36 @@ supplierRoutes.post('/spas/:id/treatments', async (c) => {
   const body = await c.req.json().catch(() => null);
   const v = validate(body, {
     name: { required: true, min: 3, max: 100 },
-    category: { required: true, enum: ['massage', 'skincare', 'body', 'thermal', 'hydro', 'wellness'] },
+    category: { enum: ['massage', 'skincare', 'body', 'thermal', 'hydro', 'wellness'] },
     description: { max: 1000 },
-    durationMin: { required: true, type: 'int', min: 15, max: 480 },
+    descriptionHtml: { max: 12000 },
+    durationMin: { type: 'int', min: 15, max: 480 },
+    durations: { type: 'array' as const, max: 8 },
+    spaType: { enum: [...SPA_TYPES] },
+    genre: { enum: [...GENRES] },
+    delivery: { enum: [...DELIVERY_TYPES] },
     price: { required: true, type: 'number', min: 1, max: 100000 },
     image: { max: 300 },
     active: { type: 'boolean' },
   });
+
+  const html = sanitizeRichHtml(v.descriptionHtml ?? '');
+  const plain = richTextToPlain(html) || String(v.description ?? '').slice(0, 1000);
+  const durations = normalizeDurations(v.durations, v.durationMin);
+  if (!durations.length && !v.durationMin) throw new ApiError(400, 'Add at least one duration option', 'validation');
+  const category = v.category ?? (v.spaType ? legacyCategoryFor(v.spaType) : 'wellness');
+
   const slug = slugify(v.name);
   const dupe = await c.env.DB.prepare('SELECT 1 AS x FROM treatments WHERE spa_id = ? AND slug = ?').bind(spa.id, slug).first();
   if (dupe) throw new ApiError(409, 'You already offer a treatment with this name', 'duplicate');
   const id = newId('trt');
   await c.env.DB
-    .prepare('INSERT INTO treatments (id, spa_id, slug, name, category, description, duration_min, price, image, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(id, spa.id, slug, v.name, v.category, v.description ?? '', v.durationMin, money(v.price), v.image ?? '/images/treatment/signature-massage.jpg', v.active === false ? 0 : 1, nowIso())
+    .prepare(`INSERT INTO treatments (id, spa_id, slug, name, category, description, description_html, duration_min, durations, spa_type, genre, delivery, price, image, active, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, spa.id, slug, v.name, category, plain, html,
+      durations[0] ?? v.durationMin, JSON.stringify(durations),
+      v.spaType ?? '', v.genre ?? 'both', v.delivery ?? 'both',
+      money(v.price), v.image ?? '/images/treatment/signature-massage.jpg', v.active === false ? 0 : 1, nowIso())
     .run();
   return c.json({ id, slug }, 201);
 });
@@ -316,13 +423,31 @@ supplierRoutes.patch('/treatments/:id', async (c) => {
   const body = await c.req.json().catch(() => null);
   const v = validate(body, {
     name: { min: 3, max: 100 }, category: { enum: ['massage', 'skincare', 'body', 'thermal', 'hydro', 'wellness'] },
-    description: { max: 1000 }, durationMin: { type: 'int', min: 15, max: 480 },
+    description: { max: 1000 }, descriptionHtml: { max: 12000 },
+    durationMin: { type: 'int', min: 15, max: 480 }, durations: { type: 'array' as const, max: 8 },
+    spaType: { enum: [...SPA_TYPES] }, genre: { enum: [...GENRES] }, delivery: { enum: [...DELIVERY_TYPES] },
     price: { type: 'number', min: 1, max: 100000 }, image: { max: 300 }, active: { type: 'boolean' },
   });
+
+  // Rich text (when sent) replaces both the HTML and its plain-text shadow;
+  // otherwise the legacy plain description keeps standing.
+  const html = v.descriptionHtml !== undefined ? sanitizeRichHtml(v.descriptionHtml) : (row.description_html ?? '');
+  const plain = v.descriptionHtml !== undefined
+    ? (richTextToPlain(html) || String(v.description ?? '').slice(0, 1000) || row.description)
+    : (v.description ?? row.description);
+  const durations = v.durations !== undefined
+    ? normalizeDurations(v.durations, v.durationMin ?? row.duration_min)
+    : parse<number[]>(row.durations, []);
+  const category = v.category
+    ?? (v.spaType ? legacyCategoryFor(v.spaType) : row.category);
+
   await c.env.DB
-    .prepare('UPDATE treatments SET name = ?, category = ?, description = ?, duration_min = ?, price = ?, image = ?, active = ? WHERE id = ?')
-    .bind(v.name ?? row.name, v.category ?? row.category, v.description ?? row.description,
-      v.durationMin ?? row.duration_min, v.price != null ? money(v.price) : row.price, v.image ?? row.image,
+    .prepare(`UPDATE treatments SET name = ?, category = ?, description = ?, description_html = ?, duration_min = ?, durations = ?,
+              spa_type = ?, genre = ?, delivery = ?, price = ?, image = ?, active = ? WHERE id = ?`)
+    .bind(v.name ?? row.name, category, plain, html,
+      durations[0] ?? v.durationMin ?? row.duration_min, JSON.stringify(durations),
+      v.spaType ?? row.spa_type, v.genre ?? row.genre, v.delivery ?? row.delivery,
+      v.price != null ? money(v.price) : row.price, v.image ?? row.image,
       v.active === undefined ? row.active : v.active ? 1 : 0, row.id)
     .run();
   return c.json({ ok: true });
@@ -351,6 +476,9 @@ supplierRoutes.post('/spas/:id/packages', async (c) => {
     description: { max: 600 },
     includes: { type: 'array', max: 12 },
     durationMin: { required: true, type: 'int', min: 30, max: 1440 },
+    spaTypes: { type: 'array', max: 14 },
+    genre: { enum: [...GENRES] },
+    delivery: { enum: [...DELIVERY_TYPES] },
     price: { required: true, type: 'number', min: 1, max: 100000 },
     image: { max: 300 },
     active: { type: 'boolean' },
@@ -358,8 +486,11 @@ supplierRoutes.post('/spas/:id/packages', async (c) => {
   const slug = slugify(v.name);
   const id = newId('pkg');
   await c.env.DB
-    .prepare('INSERT INTO packages (id, spa_id, slug, name, description, includes, duration_min, price, image, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(id, spa.id, slug, v.name, v.description ?? '', JSON.stringify(v.includes ?? []), v.durationMin, money(v.price), v.image ?? '/images/package/retreat-day.jpg', v.active === false ? 0 : 1, nowIso())
+    .prepare(`INSERT INTO packages (id, spa_id, slug, name, description, includes, duration_min, spa_types, genre, delivery, price, image, active, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(id, spa.id, slug, v.name, v.description ?? '', JSON.stringify(v.includes ?? []), v.durationMin,
+      JSON.stringify(onlyValid(v.spaTypes, SPA_TYPES, 14)), v.genre ?? 'both', v.delivery ?? 'both',
+      money(v.price), v.image ?? '/images/package/retreat-day.jpg', v.active === false ? 0 : 1, nowIso())
     .run();
   return c.json({ id, slug }, 201);
 });
@@ -372,13 +503,16 @@ supplierRoutes.patch('/packages/:id', async (c) => {
   const body = await c.req.json().catch(() => null);
   const v = validate(body, {
     name: { min: 3, max: 100 }, description: { max: 600 }, includes: { type: 'array', max: 12 },
-    durationMin: { type: 'int', min: 30, max: 1440 }, price: { type: 'number', min: 1, max: 100000 },
-    image: { max: 300 }, active: { type: 'boolean' },
+    durationMin: { type: 'int', min: 30, max: 1440 },
+    spaTypes: { type: 'array', max: 14 }, genre: { enum: [...GENRES] }, delivery: { enum: [...DELIVERY_TYPES] },
+    price: { type: 'number', min: 1, max: 100000 }, image: { max: 300 }, active: { type: 'boolean' },
   });
   await c.env.DB
-    .prepare('UPDATE packages SET name = ?, description = ?, includes = ?, duration_min = ?, price = ?, image = ?, active = ? WHERE id = ?')
+    .prepare(`UPDATE packages SET name = ?, description = ?, includes = ?, duration_min = ?, spa_types = ?, genre = ?, delivery = ?, price = ?, image = ?, active = ? WHERE id = ?`)
     .bind(v.name ?? row.name, v.description ?? row.description,
       JSON.stringify(v.includes ?? parse<string[]>(row.includes, [])), v.durationMin ?? row.duration_min,
+      JSON.stringify(v.spaTypes !== undefined ? onlyValid(v.spaTypes, SPA_TYPES, 14) : parse<string[]>(row.spa_types, [])),
+      v.genre ?? row.genre, v.delivery ?? row.delivery,
       v.price != null ? money(v.price) : row.price, v.image ?? row.image,
       v.active === undefined ? row.active : v.active ? 1 : 0, row.id)
     .run();

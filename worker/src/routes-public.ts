@@ -4,6 +4,7 @@ import { ApiError, validate, newId, nowIso, money } from './util';
 import { getSlots, isDateValid } from './booking';
 import { sendEmail, emailLayout, h } from './email';
 import { getSettings } from './db';
+import { sanitizeRichHtml } from './richtext';
 
 export const publicRoutes = new Hono<AppEnv>();
 
@@ -22,8 +23,21 @@ const shapeSpa = (r: any) => ({
   categories: parseJson<string[]>(r.categories, []), priceLevel: r.price_level, rating: r.rating,
   reviewCount: r.review_count, featured: !!r.featured, lat: r.lat, lng: r.lng,
   hours: parseJson<any[]>(r.hours, []), status: r.status,
+  phone: r.phone ?? '', website: r.website ?? '', mapsUrl: r.maps_url ?? '',
+  spaCategories: parseJson<string[]>(r.spa_categories, []), spaTypes: parseJson<string[]>(r.spa_types, []),
+  genre: r.genre ?? 'both', doorstep: !!r.doorstep,
   minPrice: r.min_price != null ? money(Number(r.min_price)) : null,
   maxPrice: r.max_price != null ? money(Number(r.max_price)) : null,
+});
+
+/** Public treatment shape: rich description + duration options + taxonomy. */
+const shapeTreatment = (t: any) => ({
+  ...t,
+  durationMin: t.duration_min,
+  duration: t.duration_min,
+  durations: parseJson<number[]>(t.durations, []).filter((d) => Number(d) > 0),
+  descriptionHtml: t.description_html ? sanitizeRichHtml(t.description_html) : '',
+  spaType: t.spa_type ?? '', genre: t.genre ?? 'both', delivery: t.delivery ?? 'both',
 });
 
 publicRoutes.get('/health', (c) => c.json({ ok: true, ts: nowIso() }));
@@ -127,8 +141,8 @@ publicRoutes.get('/spas/:slug', async (c) => {
   const spa = shapeSpa(row);
 
   const [treatments, packages, reviews] = await c.env.DB.batch([
-    c.env.DB.prepare('SELECT slug, name, category, description, duration_min, price, image FROM treatments WHERE spa_id = ? AND active = 1 ORDER BY price ASC').bind(spa.id),
-    c.env.DB.prepare('SELECT slug, name, description, includes, duration_min, price, image FROM packages WHERE spa_id = ? AND active = 1 ORDER BY price ASC').bind(spa.id),
+    c.env.DB.prepare('SELECT slug, name, category, description, description_html, duration_min, durations, spa_type, genre, delivery, price, image FROM treatments WHERE spa_id = ? AND active = 1 ORDER BY price ASC').bind(spa.id),
+    c.env.DB.prepare('SELECT slug, name, description, includes, duration_min, spa_types, genre, delivery, price, image FROM packages WHERE spa_id = ? AND active = 1 ORDER BY price ASC').bind(spa.id),
     c.env.DB.prepare("SELECT id, name, city, rating, title, body, created_at FROM reviews WHERE spa_id = ? AND status = 'approved' ORDER BY created_at DESC LIMIT 12").bind(spa.id),
   ]);
 
@@ -138,8 +152,12 @@ publicRoutes.get('/spas/:slug', async (c) => {
 
   return c.json({
     spa,
-    treatments: treatments.results.map((t: any) => ({ ...t, durationMin: t.duration_min, duration: t.duration_min })),
-    packages: packages.results.map((p: any) => ({ ...p, includes: parseJson<string[]>(p.includes, []), durationMin: p.duration_min })),
+    treatments: treatments.results.map(shapeTreatment),
+    packages: packages.results.map((p: any) => ({
+      ...p,
+      includes: parseJson<string[]>(p.includes, []), durationMin: p.duration_min,
+      spaTypes: parseJson<string[]>(p.spa_types, []), genre: p.genre ?? 'both', delivery: p.delivery ?? 'both',
+    })),
     reviews: reviews.results.map((r: any) => ({ ...r, createdAt: r.created_at })),
     supplierName: supplier?.company_name ?? null,
   });
@@ -241,6 +259,7 @@ publicRoutes.get('/availability', async (c) => {
   const date = c.req.query('date') ?? '';
   const itemType = (c.req.query('itemType') ?? 'treatment') as 'treatment' | 'package';
   const itemSlug = c.req.query('itemSlug');
+  const wantedDuration = Number(c.req.query('durationMin') ?? 0) || 0;
   if (!spaSlug || !isDateValid(date)) return c.json({ slots: [], reason: 'invalid_input' }, 400);
 
   const spa = await c.env.DB.prepare("SELECT id, name, hours FROM spas WHERE slug = ? AND status = 'approved'").bind(spaSlug).first<any>();
@@ -248,17 +267,22 @@ publicRoutes.get('/availability', async (c) => {
 
   const table = itemType === 'package' ? 'packages' : 'treatments';
   const item = await c.env.DB
-    .prepare(`SELECT name, duration_min, price FROM ${table} WHERE spa_id = ? AND slug = ? AND active = 1`)
+    .prepare(`SELECT name, duration_min, durations, price FROM ${table} WHERE spa_id = ? AND slug = ? AND active = 1`)
     .bind(spa.id, itemSlug ?? '')
     .first<any>();
   if (!item) throw new ApiError(404, 'Treatment or package not found', 'not_found');
 
-  const slots = await getSlots(c.env.DB, spa.id, date, item.duration_min);
+  // A treatment may offer several duration options; honour the one requested.
+  const options = parseJson<number[]>(item.durations, []).filter((d) => Number(d) > 0);
+  const durationMin = wantedDuration && options.includes(wantedDuration) ? wantedDuration : (options[0] ?? item.duration_min);
+
+  const slots = await getSlots(c.env.DB, spa.id, date, durationMin);
   const hours = parseJson<any[]>(spa.hours, []);
   const jsDay = (new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7;
   return c.json({
     slots,
-    durationMin: item.duration_min,
+    durationMin,
+    durations: options.length ? options : [durationMin],
     itemName: item.name,
     price: money(Number(item.price)),
     dayHours: hours[jsDay] ?? null,

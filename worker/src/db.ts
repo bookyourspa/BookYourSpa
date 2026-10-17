@@ -7,7 +7,7 @@ import { newId, nowIso, randomToken } from './util';
 let schemaReady = false;
 let lastSchemaCheck = 0;
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const MIGRATIONS: Record<number, string[]> = {
   2: [
     'ALTER TABLE offers ADD COLUMN spa_id TEXT',
@@ -38,6 +38,27 @@ const MIGRATIONS: Record<number, string[]> = {
       created_at TEXT NOT NULL
     )`,
     'CREATE INDEX IF NOT EXISTS idx_listing_images_spa ON listing_images(spa_id)',
+  ],
+  5: [
+    // Listing taxonomy + contact (Google Maps import fills phone/email/website).
+    `ALTER TABLE spas ADD COLUMN phone TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE spas ADD COLUMN email TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE spas ADD COLUMN website TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE spas ADD COLUMN maps_url TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE spas ADD COLUMN spa_categories TEXT NOT NULL DEFAULT '[]'`,
+    `ALTER TABLE spas ADD COLUMN spa_types TEXT NOT NULL DEFAULT '[]'`,
+    `ALTER TABLE spas ADD COLUMN genre TEXT NOT NULL DEFAULT 'both'`,
+    `ALTER TABLE spas ADD COLUMN doorstep INTEGER NOT NULL DEFAULT 0`,
+    // Treatments: rich-text description, multiple duration options, spa type, genre, delivery.
+    `ALTER TABLE treatments ADD COLUMN description_html TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE treatments ADD COLUMN durations TEXT NOT NULL DEFAULT '[]'`,
+    `ALTER TABLE treatments ADD COLUMN spa_type TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE treatments ADD COLUMN genre TEXT NOT NULL DEFAULT 'both'`,
+    `ALTER TABLE treatments ADD COLUMN delivery TEXT NOT NULL DEFAULT 'both'`,
+    // Packages: multi spa types, genre, delivery.
+    `ALTER TABLE packages ADD COLUMN spa_types TEXT NOT NULL DEFAULT '[]'`,
+    `ALTER TABLE packages ADD COLUMN genre TEXT NOT NULL DEFAULT 'both'`,
+    `ALTER TABLE packages ADD COLUMN delivery TEXT NOT NULL DEFAULT 'both'`,
   ],
 };
 
